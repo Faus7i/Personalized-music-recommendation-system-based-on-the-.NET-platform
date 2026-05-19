@@ -1,0 +1,163 @@
+@page "/callback"
+@inject SpotifyAuthService SpotifyAuthService
+@inject NavigationManager Navigation
+@inject IHttpClientFactory HttpClientFactory
+
+<PageTitle>Spotify 授权中 - SonicCanvas</PageTitle>
+
+<section class="dashboard-section">
+    <div class="empty-state">
+        <div class="empty-icon">♫</div>
+        <h3>正在完成 Spotify 授权</h3>
+        <p>@message</p>
+    </div>
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "code")]
+    public string? Code { get; set; }
+
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? Error { get; set; }
+
+    [SupplyParameterFromQuery(Name = "state")]
+    public string? State { get; set; }
+
+    private string message = "正在与 Spotify 建立授权会话...";
+    private bool hasProcessed;
+
+    protected override Task OnParametersSetAsync()
+    {
+        #region debug-point spotify-oauth-black-screen-callback-params
+        _ = DebugReportAsync("callback.parameters", new
+        {
+            hasCode = !string.IsNullOrWhiteSpace(Code),
+            hasError = !string.IsNullOrWhiteSpace(Error),
+            stateLength = string.IsNullOrWhiteSpace(State) ? 0 : State.Length
+        });
+        #endregion
+
+        if (!string.IsNullOrWhiteSpace(Error))
+        {
+            message = $"Spotify 授权失败：{Error}";
+            hasProcessed = true;
+            return Task.CompletedTask;
+        }
+
+        if (string.IsNullOrWhiteSpace(Code))
+        {
+            message = "未收到有效的 Spotify 授权码。";
+            hasProcessed = true;
+            return Task.CompletedTask;
+        }
+
+        message = "Spotify 已返回授权码，正在写入本地会话...";
+        hasProcessed = false;
+        return Task.CompletedTask;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (hasProcessed || string.IsNullOrWhiteSpace(Code) || !string.IsNullOrWhiteSpace(Error))
+        {
+            return;
+        }
+
+        hasProcessed = true;
+
+        try
+        {
+            #region debug-point spotify-oauth-black-screen-callback-exchange-start
+            await DebugReportAsync("callback.exchange.start", new
+            {
+                codeLength = Code!.Length,
+                stateLength = string.IsNullOrWhiteSpace(State) ? 0 : State.Length
+            });
+            #endregion
+
+            await SpotifyAuthService.ExchangeCodeAsync(Code);
+            message = "Spotify 授权成功，正在返回页面...";
+            StateHasChanged();
+            await Task.Delay(1200);
+            var returnUrl = SpotifyAuthService.ResolveReturnUrl(State);
+
+            #region debug-point spotify-oauth-black-screen-callback-navigate
+            await DebugReportAsync("callback.navigate", new { returnUrl });
+            #endregion
+
+            await JSRuntime.InvokeVoidAsync("musicRecSpotifyPlayer.completeAuthorization", returnUrl);
+        }
+        catch (Exception ex)
+        {
+            #region debug-point spotify-oauth-black-screen-callback-exception
+            await DebugReportAsync("callback.exchange.exception", new
+            {
+                exceptionType = ex.GetType().FullName,
+                message = ex.Message
+            });
+            #endregion
+
+            message = $"Spotify 授权失败：{ex.Message}";
+            StateHasChanged();
+        }
+    }
+
+    #region debug-point spotify-oauth-black-screen-callback-reporter
+    private async Task DebugReportAsync(string point, object payload)
+    {
+        try
+        {
+            var url = ResolveDebugServerUrl();
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return;
+            }
+
+            using var client = HttpClientFactory.CreateClient();
+            await client.PostAsJsonAsync(url, new
+            {
+                ts = DateTimeOffset.UtcNow,
+                sessionId = "spotify-oauth-black-screen",
+                component = "MusicRec.Web.Callback",
+                point,
+                payload
+            });
+        }
+        catch
+        {
+        }
+    }
+
+    private static string? ResolveDebugServerUrl()
+    {
+        try
+        {
+            var dir = Directory.GetCurrentDirectory();
+            for (var i = 0; i < 6 && !string.IsNullOrWhiteSpace(dir); i++)
+            {
+                var envPath = Path.Combine(dir, ".dbg", "spotify-oauth-black-screen.env");
+                if (File.Exists(envPath))
+                {
+                    var line = File.ReadLines(envPath).FirstOrDefault(x => x.StartsWith("DEBUG_SERVER_URL=", StringComparison.Ordinal));
+                    if (line is null)
+                    {
+                        return null;
+                    }
+
+                    return line["DEBUG_SERVER_URL=".Length..].Trim();
+                }
+
+                dir = Directory.GetParent(dir)?.FullName;
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
+    }
+    #endregion
+
+    [Inject]
+    private IJSRuntime JSRuntime { get; set; } = default!;
+}

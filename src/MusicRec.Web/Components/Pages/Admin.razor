@@ -1,0 +1,192 @@
+@page "/admin"
+@inject CatalogApiClient CatalogApiClient
+@inject RecommendationApiClient RecommendationApiClient
+@inject UserSessionState Session
+
+<PageTitle>后台管理 - SonicCanvas</PageTitle>
+
+<section class="dashboard-section">
+    <div class="section-headline">
+        <div>
+            <h2>后台管理</h2>
+            <p>用于毕业设计演示的曲库接入、行为概览与推荐评估面板</p>
+        </div>
+    </div>
+
+    <div class="welcome-grid">
+        <article class="welcome-card">
+            <span>Spotify 接入状态</span>
+            <h2>@(spotifyStatus?.Configured == true ? "已配置" : "未配置")</h2>
+            <p>@(spotifyStatus?.Message ?? "点击刷新检查当前配置状态。")</p>
+        </article>
+        <article class="welcome-card">
+            <span>行为事件总量</span>
+            <h2>@(behaviorSummary?.TotalEvents ?? 0)</h2>
+            <p>播放、完成、跳过、详情查看等事件会累计在这里。</p>
+        </article>
+        <article class="welcome-card">
+            <span>推荐评估</span>
+            <h2>@((evaluation?.PrecisionAt5 ?? 0).ToString("0.000"))</h2>
+            <p>当前展示 `Precision@5`，其余指标在下方评估卡片中查看。</p>
+        </article>
+    </div>
+</section>
+
+<section class="dashboard-section">
+    <div class="section-headline">
+        <div>
+            <h2>Spotify 曲库搜索</h2>
+            <p>通过 Spotify Web API 搜索歌曲元数据</p>
+        </div>
+        <button class="pill-button ghost-pill" @onclick="LoadDashboardAsync">刷新状态</button>
+    </div>
+
+    <div class="sidebar-form">
+        <input class="sidebar-input" @bind="spotifyKeyword" @bind:event="oninput" placeholder="输入歌曲名或歌手，例如 Taylor Swift" />
+        <input class="sidebar-input" @bind="spotifyGenre" @bind:event="oninput" placeholder="导入后的流派，例如 Pop" />
+        <button class="pill-button primary-pill" @onclick="SearchSpotifyAsync" disabled="@isSpotifyLoading">
+            @(isSpotifyLoading ? "搜索中..." : "搜索 Spotify")
+        </button>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(adminMessage))
+    {
+        <p class="sidebar-help">@adminMessage</p>
+    }
+
+    @if (spotifyResults.Tracks.Count > 0)
+    {
+        <div class="track-grid">
+            @foreach (var track in spotifyResults.Tracks)
+            {
+                <article class="track-card">
+                    <ResilientImage Class="track-cover-image"
+                                    Src="@track.CoverUrl"
+                                    Alt="@track.Title"
+                                    FallbackSrc="@CoverImageResolver.BuildSongCover(track.Title, track.Artist)" />
+                    <div class="track-content">
+                        <div class="track-heading">
+                            <h3>@track.Title</h3>
+                        </div>
+                        <p class="track-subtitle">@track.Artist</p>
+                        <p class="track-meta">@track.Album</p>
+                        <div class="track-tags">
+                            <span>@track.DurationSeconds 秒</span>
+                            <span>热度 @track.Popularity</span>
+                        </div>
+                        <div class="track-actions">
+                            <a class="pill-button ghost-pill" href="@track.ExternalUrl" target="_blank">打开 Spotify</a>
+                        </div>
+                    </div>
+                </article>
+            }
+        </div>
+    }
+</section>
+
+<section class="dashboard-section">
+    <div class="section-headline">
+        <div>
+            <h2>行为与评估概览</h2>
+            <p>当前登录用户的行为摘要与推荐算法评估结果</p>
+        </div>
+    </div>
+
+    @if (!Session.IsAuthenticated)
+    {
+        <div class="empty-state">
+            <div class="empty-icon">🔐</div>
+            <h3>请先登录</h3>
+            <p>登录后才会显示行为摘要与推荐评估结果。</p>
+        </div>
+    }
+    else
+    {
+        <div class="welcome-grid">
+            <article class="welcome-card">
+                <span>播放次数</span>
+                <h2>@(behaviorSummary?.PlayCount ?? 0)</h2>
+                <p>完成播放：@(behaviorSummary?.CompletePlayCount ?? 0)，跳过：@(behaviorSummary?.SkipCount ?? 0)</p>
+            </article>
+            <article class="welcome-card">
+                <span>显式偏好</span>
+                <h2>@(behaviorSummary?.LikeCount ?? 0)</h2>
+                <p>喜欢：@(behaviorSummary?.LikeCount ?? 0)，不喜欢：@(behaviorSummary?.DislikeCount ?? 0)</p>
+            </article>
+            <article class="welcome-card">
+                <span>Recall@10</span>
+                <h2>@((evaluation?.RecallAt10 ?? 0).ToString("0.000"))</h2>
+                <p>@(evaluation?.Notes ?? "等待评估完成")</p>
+            </article>
+        </div>
+    }
+</section>
+
+@code {
+    private SpotifyCatalogStatusDto? spotifyStatus;
+    private BehaviorSummaryDto? behaviorSummary;
+    private RecommendationEvaluationDto? evaluation;
+    private string spotifyKeyword = string.Empty;
+    private string spotifyGenre = "Pop";
+    private string? adminMessage;
+    private bool isSpotifyLoading;
+    private SpotifyCatalogSearchResponseDto spotifyResults = new([], [], []);
+
+    protected override async Task OnInitializedAsync()
+    {
+        Session.Changed += OnSessionChanged;
+        await LoadDashboardAsync();
+    }
+
+    private void OnSessionChanged() => _ = InvokeAsync(LoadDashboardAsync);
+
+    private async Task LoadDashboardAsync()
+    {
+        spotifyStatus = await CatalogApiClient.GetSpotifyStatusAsync();
+
+        if (!Session.IsAuthenticated || Session.CurrentUser is null)
+        {
+            behaviorSummary = null;
+            evaluation = null;
+            return;
+        }
+
+        behaviorSummary = await CatalogApiClient.GetBehaviorSummaryAsync(Session.CurrentUser.UserId);
+        evaluation = await RecommendationApiClient.EvaluateAsync(Session.CurrentUser.UserId);
+    }
+
+    private async Task SearchSpotifyAsync()
+    {
+        adminMessage = null;
+        spotifyResults = new SpotifyCatalogSearchResponseDto([], [], []);
+
+        if (string.IsNullOrWhiteSpace(spotifyKeyword))
+        {
+            adminMessage = "请先输入搜索关键词。";
+            return;
+        }
+
+        isSpotifyLoading = true;
+
+        try
+        {
+            spotifyResults = await CatalogApiClient.SearchSpotifyCatalogAsync(spotifyKeyword.Trim(), "track");
+            adminMessage = spotifyResults.Tracks.Count == 0
+                ? "没有查到可导入曲目。"
+                : $"已找到 {spotifyResults.Tracks.Count} 首候选歌曲。";
+        }
+        catch (Exception ex)
+        {
+            adminMessage = ex.Message;
+        }
+        finally
+        {
+            isSpotifyLoading = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        Session.Changed -= OnSessionChanged;
+    }
+}

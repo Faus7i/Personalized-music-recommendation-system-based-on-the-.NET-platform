@@ -1,0 +1,416 @@
+@inject PlayerState PlayerState
+@inject UserSessionState Session
+@inject CatalogApiClient CatalogApiClient
+@inject SpotifySessionState SpotifySession
+@inject SpotifyAuthService SpotifyAuthService
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
+@implements IDisposable
+
+<footer class="player-shell">
+    @if (PlayerState.CurrentSong is null)
+    {
+        <div class="player-empty">
+            <div>
+                <strong>还没有正在播放的歌曲</strong>
+                <p>从推荐区、歌单页或详情面板点“播放”开始试听。</p>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="player-bar" @key="PlayerState.CurrentSong.Id">
+            <div class="player-track-summary">
+                <ResilientImage Src="@PlayerState.CurrentSong.CoverUrl"
+                                Alt="@PlayerState.CurrentSong.Title"
+                                FallbackSrc="@CoverImageResolver.BuildSongCover(PlayerState.CurrentSong.Title, PlayerState.CurrentSong.Artist)" />
+                <div>
+                    <strong>@PlayerState.CurrentSong.Title</strong>
+                    <p>@PlayerState.CurrentSong.Artist · @PlayerState.CurrentSong.Album</p>
+                    <p class="player-meta-tags">@PlayerState.CurrentSong.Genre · @PlayerState.CurrentSong.MoodTag · @PlayerState.CurrentSong.TempoTag</p>
+                </div>
+            </div>
+
+            @if (UseSpotifyPlayback)
+            {
+                <div class="spotify-player-shell">
+                    <div class="spotify-player-head">
+                        <span>@SpotifyPlaybackStatus</span>
+                        <div class="spotify-player-actions">
+                            <button class="pill-button primary-pill" @onclick="ToggleSpotifyPlayAsync" disabled="@(!isSpotifyPlayerReady)">
+                                @(isSpotifyPlaying ? "暂停" : "播放")
+                            </button>
+                        </div>
+                    </div>
+
+                    <input class="spotify-range"
+                           type="range"
+                           min="0"
+                           max="@Math.Max(spotifyDurationMs, 1)"
+                           value="@spotifyPositionMs"
+                           @onchange="SeekSpotifyAsync" />
+
+                    <div class="spotify-player-footer">
+                        <span>@FormatDurationFromMilliseconds(spotifyPositionMs) / @FormatDurationFromMilliseconds(spotifyDurationMs)</span>
+                        <label class="spotify-volume">
+                            音量
+                            <input type="range"
+                                   min="0"
+                                   max="100"
+                                   value="@spotifyVolumePercent"
+                                   @onchange="SetSpotifyVolumeAsync" />
+                        </label>
+                    </div>
+                </div>
+            }
+            else if (HasPreview)
+            {
+                <audio class="audio-player"
+                       controls
+                       autoplay
+                       src="@PlayerState.CurrentSong.AudioUrl"
+                       @onplay='() => TrackBehaviorAsync("play")'
+                       @onpause='() => TrackBehaviorAsync("pause")'
+                       @onended='() => TrackBehaviorAsync("complete", 1)'>
+                    你的浏览器不支持音频播放。
+                </audio>
+            }
+            else
+            {
+                <div class="player-unavailable">
+                    <strong>当前歌曲没有可用播放源</strong>
+                </div>
+            }
+        </div>
+    }
+</footer>
+
+@if (showFallbackDialog)
+{
+    <div class="spotify-modal-backdrop">
+        <div class="spotify-modal">
+            <h3>Spotify 播放失败</h3>
+            <p>@playbackErrorMessage</p>
+            <div class="spotify-modal-actions">
+                @if (fallbackActionMode != FallbackActionMode.None)
+                {
+                    <button class="pill-button primary-pill" @onclick="ConfirmFallbackAsync">@fallbackActionLabel</button>
+                }
+                <button class="pill-button ghost-pill" @onclick="CancelFallback">取消跳转</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private DotNetObjectReference<PlayerBar>? dotNetRef;
+    private Guid? lastHandledSongId;
+    private bool isSpotifyPlayerReady;
+    private bool isSpotifyPlaying;
+    private int spotifyPositionMs;
+    private int spotifyDurationMs;
+    private int spotifyVolumePercent = 70;
+    private string? spotifyDeviceId;
+    private string? currentSpotifyAccessToken;
+    private string? playbackErrorMessage;
+    private string fallbackActionLabel = "我知道了";
+    private bool showFallbackDialog;
+    private FallbackActionMode fallbackActionMode;
+
+    private bool UseSpotifyPlayback =>
+        !string.IsNullOrWhiteSpace(PlayerState.CurrentSong?.SpotifyUri);
+
+    private bool HasPreview =>
+        !string.IsNullOrWhiteSpace(PlayerState.CurrentSong?.AudioUrl);
+
+    private string SpotifyPlaybackStatus
+    {
+        get
+        {
+            if (!isSpotifyPlayerReady)
+            {
+                return "正在准备播放器...";
+            }
+
+            return isSpotifyPlaying
+                ? "正在播放当前歌曲"
+                : "播放器已就绪，可播放当前歌曲";
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        PlayerState.Changed += OnPlayerChanged;
+        SpotifySession.Changed += OnPlayerChanged;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            dotNetRef = DotNetObjectReference.Create(this);
+        }
+
+        if (!SpotifySession.IsReady)
+        {
+            await SpotifySession.InitializeAsync();
+        }
+
+        if (UseSpotifyPlayback && lastHandledSongId != PlayerState.CurrentSong?.Id)
+        {
+            lastHandledSongId = PlayerState.CurrentSong?.Id;
+            await TryPlayCurrentSongWithSpotifyAsync();
+        }
+    }
+
+    private void OnPlayerChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task TrackBehaviorAsync(string eventType, double? completionRate = null)
+    {
+        if (!Session.IsAuthenticated || Session.CurrentUser is null || PlayerState.CurrentSong is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await CatalogApiClient.TrackBehaviorAsync(new TrackBehaviorEventRequest(
+                Session.CurrentUser.UserId,
+                PlayerState.CurrentSong.Id,
+                eventType,
+                "player",
+                "web",
+                completionRate,
+                null,
+                PlayerState.CurrentSong.DurationSeconds,
+                DateTimeOffset.UtcNow));
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task ConnectSpotifyAsync()
+    {
+        await BeginSpotifyAuthorizationAsync();
+    }
+
+    private async Task TryPlayCurrentSongWithSpotifyAsync()
+    {
+        if (PlayerState.CurrentSong is null || string.IsNullOrWhiteSpace(PlayerState.CurrentSong.SpotifyUri))
+        {
+            return;
+        }
+
+        try
+        {
+            var session = await SpotifyAuthService.EnsureValidSessionAsync();
+            if (session is null)
+            {
+                ShowFallbackDialog(
+                    "当前歌曲需要 Spotify 授权后才能站内播放。",
+                    FallbackActionMode.OpenExternal);
+                return;
+            }
+
+            currentSpotifyAccessToken = session.AccessToken;
+            await EnsureSpotifyPlayerReadyAsync(session.AccessToken);
+            await JS.InvokeVoidAsync("musicRecSpotifyPlayer.playUri", currentSpotifyAccessToken, PlayerState.CurrentSong.SpotifyUri);
+        }
+        catch (Exception ex)
+        {
+            await HandlePlaybackExceptionAsync(ex);
+        }
+    }
+
+    private async Task EnsureSpotifyPlayerReadyAsync(string accessToken)
+    {
+        if (isSpotifyPlayerReady)
+        {
+            return;
+        }
+
+        if (dotNetRef is null)
+        {
+            dotNetRef = DotNetObjectReference.Create(this);
+        }
+
+        currentSpotifyAccessToken = accessToken;
+        spotifyDeviceId = await JS.InvokeAsync<string>("musicRecSpotifyPlayer.initialize", accessToken, dotNetRef);
+        isSpotifyPlayerReady = !string.IsNullOrWhiteSpace(spotifyDeviceId);
+    }
+
+    private async Task ToggleSpotifyPlayAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(currentSpotifyAccessToken))
+            {
+                var session = await SpotifyAuthService.EnsureValidSessionAsync();
+                currentSpotifyAccessToken = session?.AccessToken;
+            }
+
+            await JS.InvokeVoidAsync("musicRecSpotifyPlayer.togglePlay", currentSpotifyAccessToken);
+        }
+        catch (Exception ex)
+        {
+            await HandlePlaybackExceptionAsync(ex);
+        }
+    }
+
+    private async Task SeekSpotifyAsync(ChangeEventArgs args)
+    {
+        if (args.Value is null || !int.TryParse(args.Value.ToString(), out var position))
+        {
+            return;
+        }
+
+        try
+        {
+            spotifyPositionMs = position;
+            await JS.InvokeVoidAsync("musicRecSpotifyPlayer.seek", position, currentSpotifyAccessToken);
+        }
+        catch (Exception ex)
+        {
+            await HandlePlaybackExceptionAsync(ex);
+        }
+    }
+
+    private async Task SetSpotifyVolumeAsync(ChangeEventArgs args)
+    {
+        if (args.Value is null || !int.TryParse(args.Value.ToString(), out var volumePercent))
+        {
+            return;
+        }
+
+        spotifyVolumePercent = Math.Clamp(volumePercent, 0, 100);
+
+        try
+        {
+            await JS.InvokeVoidAsync("musicRecSpotifyPlayer.setVolume", spotifyVolumePercent / 100d, currentSpotifyAccessToken);
+        }
+        catch (Exception ex)
+        {
+            await HandlePlaybackExceptionAsync(ex);
+        }
+    }
+
+    [JSInvokable]
+    public Task OnSpotifyPlayerReady(string deviceId)
+    {
+        spotifyDeviceId = deviceId;
+        isSpotifyPlayerReady = true;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public Task OnSpotifyPlayerStateChanged(SpotifyPlayerStateSnapshot snapshot)
+    {
+        isSpotifyPlaying = !snapshot.Paused;
+        spotifyPositionMs = snapshot.PositionMs;
+        spotifyDurationMs = snapshot.DurationMs;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public Task OnSpotifyPlaybackError(string message)
+    {
+        var (friendlyMessage, actionMode) = BuildFallbackDecision(message);
+        ShowFallbackDialog(friendlyMessage, actionMode);
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandlePlaybackExceptionAsync(Exception exception)
+    {
+        var (friendlyMessage, actionMode) = BuildFallbackDecision(exception.Message);
+
+        ShowFallbackDialog(friendlyMessage, actionMode);
+    }
+
+    private void ShowFallbackDialog(string message, FallbackActionMode actionMode = FallbackActionMode.OpenExternal)
+    {
+        playbackErrorMessage = string.IsNullOrWhiteSpace(message)
+            ? "播放失败，请稍后重试。"
+            : message;
+        fallbackActionMode = actionMode;
+        fallbackActionLabel = actionMode switch
+        {
+            FallbackActionMode.OpenExternal => "打开 Spotify 播放",
+            _ => "我知道了"
+        };
+        showFallbackDialog = true;
+    }
+
+    private async Task ConfirmFallbackAsync()
+    {
+        showFallbackDialog = false;
+
+        if (fallbackActionMode == FallbackActionMode.OpenExternal &&
+            !string.IsNullOrWhiteSpace(PlayerState.CurrentSong?.ExternalUrl))
+        {
+            await JS.InvokeVoidAsync("open", PlayerState.CurrentSong.ExternalUrl, "_blank");
+        }
+    }
+
+    private void CancelFallback()
+    {
+        showFallbackDialog = false;
+    }
+
+    private async Task BeginSpotifyAuthorizationAsync()
+    {
+        var returnUrl = Navigation.ToBaseRelativePath(Navigation.Uri);
+        returnUrl = string.IsNullOrWhiteSpace(returnUrl) ? "/" : $"/{returnUrl.TrimStart('/')}";
+        await JS.InvokeVoidAsync("open", SpotifyAuthService.BuildAuthorizeUrl(returnUrl), "_blank");
+    }
+
+    private (string Message, FallbackActionMode ActionMode) BuildFallbackDecision(string? rawMessage)
+    {
+        var message = string.IsNullOrWhiteSpace(rawMessage)
+            ? "播放失败，请稍后重试。"
+            : rawMessage.Trim();
+
+        if (message.Contains("account_error", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("premium", StringComparison.OrdinalIgnoreCase))
+        {
+            return ("当前账号暂时无法使用站内播放，请确认账号状态后重试，或直接前往 Spotify 播放。", FallbackActionMode.OpenExternal);
+        }
+
+        if (message.Contains("设备不可用", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("尚未初始化", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("SDK", StringComparison.OrdinalIgnoreCase))
+        {
+            return ("站内播放器尚未就绪，请稍后重试；如果持续失败，可直接前往 Spotify 播放。", FallbackActionMode.OpenExternal);
+        }
+
+        return ("站内播放失败，你可以稍后重试，或直接前往 Spotify 播放当前歌曲。", FallbackActionMode.OpenExternal);
+    }
+
+    private static string FormatDurationFromMilliseconds(int milliseconds) =>
+        TimeSpan.FromMilliseconds(Math.Max(milliseconds, 0)).ToString(@"mm\:ss");
+
+    public void Dispose()
+    {
+        PlayerState.Changed -= OnPlayerChanged;
+        SpotifySession.Changed -= OnPlayerChanged;
+        dotNetRef?.Dispose();
+        _ = JS.InvokeVoidAsync("musicRecSpotifyPlayer.disconnect");
+    }
+
+    public sealed class SpotifyPlayerStateSnapshot
+    {
+        public bool Paused { get; set; }
+        public int PositionMs { get; set; }
+        public int DurationMs { get; set; }
+        public int Volume { get; set; }
+        public string TrackName { get; set; } = string.Empty;
+        public string ArtistName { get; set; } = string.Empty;
+    }
+
+    private enum FallbackActionMode
+    {
+        None,
+        ConnectSpotify,
+        OpenExternal
+    }
+}

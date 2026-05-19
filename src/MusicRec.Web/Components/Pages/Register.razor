@@ -1,0 +1,103 @@
+@page "/register"
+@inject IdentityApiClient IdentityApiClient
+@inject UserSessionState Session
+@inject NavigationManager Navigation
+
+<PageTitle>注册 - SonicCanvas</PageTitle>
+
+<section class="auth-shell">
+    <div class="auth-panel">
+        <div class="auth-copy">
+            <span class="hero-badge">创建账号</span>
+            <h1>加入 SonicCanvas</h1>
+            <p class="page-subtitle">注册后即可创建专属歌单、收藏喜欢的歌曲，并获得更贴近你口味的推荐。</p>
+        </div>
+
+        <EditForm Model="model" OnValidSubmit="HandleSubmit">
+            <DataAnnotationsValidator />
+            <ValidationSummary />
+
+            <div class="form-card auth-form-card">
+                <label>用户名</label>
+                <input class="form-control" @bind="model.UserName" @bind:event="oninput" />
+
+                <label>邮箱</label>
+                <input class="form-control" type="email" @bind="model.Email" @bind:event="oninput" />
+
+                <label>手机号</label>
+                <input class="form-control" @bind="model.PhoneNumber" @bind:event="oninput" />
+
+                <label>密码</label>
+                <input class="form-control" type="password" @bind="model.Password" @bind:event="oninput" />
+
+                <label>确认密码</label>
+                <input class="form-control" type="password" @bind="model.ConfirmPassword" @bind:event="oninput" />
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger">@errorMessage</div>
+                }
+
+                <button class="pill-button primary-pill auth-submit-button" type="submit" disabled="@isSubmitting">
+                    @(isSubmitting ? "创建中..." : "注册")
+                </button>
+
+                <p class="auth-switch">
+                    已有账号？
+                    <a href="login">去登录</a>
+                </p>
+            </div>
+        </EditForm>
+    </div>
+</section>
+
+@code {
+    private RegisterFormModel model = new();
+    private string? errorMessage;
+    private bool isSubmitting;
+
+    private async Task HandleSubmit()
+    {
+        errorMessage = null;
+        isSubmitting = true;
+
+        try
+        {
+            var response = await IdentityApiClient.RegisterAsync(new RegisterRequest(
+                model.UserName,
+                model.Email,
+                model.PhoneNumber,
+                model.Password,
+                model.ConfirmPassword));
+
+            await Session.SetUserAsync(response);
+            Navigation.NavigateTo("/");
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private sealed class RegisterFormModel
+    {
+        [Required]
+        public string UserName { get; set; } = string.Empty;
+
+        [Required, EmailAddress]
+        public string Email { get; set; } = string.Empty;
+
+        [Phone]
+        public string? PhoneNumber { get; set; }
+
+        [Required, MinLength(8)]
+        public string Password { get; set; } = string.Empty;
+
+        [Required, Compare(nameof(Password))]
+        public string ConfirmPassword { get; set; } = string.Empty;
+    }
+}

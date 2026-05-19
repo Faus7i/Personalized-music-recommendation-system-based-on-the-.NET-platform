@@ -1,0 +1,80 @@
+@page "/login"
+@inject IdentityApiClient IdentityApiClient
+@inject UserSessionState Session
+@inject NavigationManager Navigation
+
+<PageTitle>登录 - SonicCanvas</PageTitle>
+
+<section class="auth-shell">
+    <div class="auth-panel">
+        <div class="auth-copy">
+            <span class="hero-badge">欢迎回来</span>
+            <h1>登录 SonicCanvas</h1>
+            <p class="page-subtitle">继续你的个性化音乐旅程，查看推荐、歌单与喜欢的歌曲。</p>
+        </div>
+
+        <EditForm Model="model" OnValidSubmit="HandleSubmit">
+            <DataAnnotationsValidator />
+            <ValidationSummary />
+
+            <div class="form-card auth-form-card">
+                <label>用户名、邮箱或手机号</label>
+                <input class="form-control" @bind="model.UserNameOrEmail" @bind:event="oninput" />
+
+                <label>密码</label>
+                <input class="form-control" type="password" @bind="model.Password" @bind:event="oninput" />
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger">@errorMessage</div>
+                }
+
+                <button class="pill-button primary-pill auth-submit-button" type="submit" disabled="@isSubmitting">
+                    @(isSubmitting ? "登录中..." : "登录")
+                </button>
+
+                <p class="auth-switch">
+                    还没有账号？
+                    <a href="register">立即注册</a>
+                </p>
+            </div>
+        </EditForm>
+    </div>
+</section>
+
+@code {
+    private LoginFormModel model = new();
+    private string? errorMessage;
+    private bool isSubmitting;
+
+    private async Task HandleSubmit()
+    {
+        errorMessage = null;
+        isSubmitting = true;
+
+        try
+        {
+            var response = await IdentityApiClient.LoginAsync(new LoginRequest(model.UserNameOrEmail, model.Password));
+
+            await Session.SetUserAsync(response);
+            Navigation.NavigateTo("/");
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private sealed class LoginFormModel
+    {
+        [Required]
+        public string UserNameOrEmail { get; set; } = string.Empty;
+
+        [Required]
+        public string Password { get; set; } = string.Empty;
+    }
+}

@@ -1,0 +1,333 @@
+@page "/playlist/{PlaylistId:guid}"
+@inject UserSessionState Session
+@inject CatalogApiClient CatalogApiClient
+@inject PlayerState PlayerState
+@inject LibraryState LibraryState
+@inject NavigationManager Navigation
+@implements IDisposable
+
+<PageTitle>歌单 - SonicCanvas</PageTitle>
+
+@if (!Session.IsReady)
+{
+    <div class="loading-container">
+        <div class="loading-spinner"></div>
+        <p>正在恢复你的歌单状态...</p>
+    </div>
+}
+else if (!Session.IsAuthenticated)
+{
+    <div class="empty-state">
+        <div class="empty-icon">🔐</div>
+        <h3>请先登录</h3>
+        <p>登录后才能查看你的自定义歌单。</p>
+        <a class="pill-button primary-pill" href="login">去登录</a>
+    </div>
+}
+else if (isLoading)
+{
+    <div class="loading-container">
+        <div class="loading-spinner"></div>
+        <p>正在载入歌单内容...</p>
+    </div>
+}
+else if (!string.IsNullOrWhiteSpace(errorMessage))
+{
+    <div class="alert-error">
+        <span class="alert-icon">⚠</span>
+        @errorMessage
+    </div>
+}
+else if (playlist is null)
+{
+    <div class="empty-state">
+        <div class="empty-icon">♪</div>
+        <h3>歌单不存在</h3>
+        <p>你访问的歌单可能已被删除，或尚未创建。</p>
+    </div>
+}
+else
+{
+    <section class="playlist-hero">
+        <div class="playlist-hero-cover">♫</div>
+        <div class="playlist-hero-content">
+            <span class="playlist-kicker">自定义歌单</span>
+            <h1>@playlist.Name</h1>
+            <p>@(string.IsNullOrWhiteSpace(playlist.Description) ? "将你喜欢的歌曲收藏到这里，形成自己的主题歌单。" : playlist.Description)</p>
+            <div class="playlist-stat-row">
+                <span>@playlist.Songs.Count 首歌曲</span>
+                <span>@(playlist.IsPublic ? "公开歌单" : "私密歌单")</span>
+                <span>支持编辑、移除与播放</span>
+            </div>
+            @if (!playlist.IsSystemPlaylist)
+            {
+                <div class="playlist-row-actions">
+                    <button class="pill-button" @onclick="ToggleEditMode">
+                        @(isEditing ? "取消编辑" : "编辑歌单")
+                    </button>
+                    <button class="pill-button" @onclick="DeletePlaylistAsync" disabled="@isDeleting">
+                        @(isDeleting ? "删除中..." : "删除歌单")
+                    </button>
+                </div>
+            }
+        </div>
+    </section>
+
+    @if (isEditing)
+    {
+        <EditForm Model="editModel" OnValidSubmit="SavePlaylistAsync">
+            <DataAnnotationsValidator />
+            <div class="sidebar-form playlist-edit-form">
+                <input class="sidebar-input" @bind="editModel.Name" @bind:event="oninput" placeholder="歌单名称" />
+                <input class="sidebar-input" @bind="editModel.Description" @bind:event="oninput" placeholder="歌单简介（可选）" />
+                <label class="playlist-visibility-toggle">
+                    <input type="checkbox" @bind="editModel.IsPublic" />
+                    <span>公开歌单，允许在界面中标记为公开状态</span>
+                </label>
+                <div class="playlist-row-actions">
+                    <button class="pill-button primary-pill" type="submit" disabled="@isSaving">
+                        @(isSaving ? "保存中..." : "保存修改")
+                    </button>
+                    <button class="pill-button" type="button" @onclick="CancelEdit">取消</button>
+                </div>
+            </div>
+        </EditForm>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(actionMessage))
+    {
+        <div class="alert-warning">@actionMessage</div>
+    }
+
+    @if (playlist.Songs.Count == 0)
+    {
+        <div class="empty-state">
+            <div class="empty-icon">＋</div>
+            <h3>歌单还是空的</h3>
+            <p>去首页打开歌曲详情，然后收藏到这个歌单。</p>
+        </div>
+    }
+    else
+    {
+        <section class="playlist-list">
+            @foreach (var song in playlist.Songs)
+            {
+                <article class="playlist-row">
+                    <button class="playlist-row-cover" @onclick="() => OpenDetailsAsync(song)">
+                        <ResilientImage Src="@song.CoverUrl"
+                                        Alt="@song.Title"
+                                        FallbackSrc="@CoverImageResolver.BuildSongCover(song.Title, song.Artist)" />
+                    </button>
+                    <div class="playlist-row-main">
+                        <strong>@song.Title</strong>
+                        <span>@song.Artist · @song.Album</span>
+                    </div>
+                    <div class="playlist-row-meta">
+                        <span>@song.Genre</span>
+                        <span>@FormatDuration(song.DurationSeconds)</span>
+                    </div>
+                    <div class="playlist-row-actions">
+                        <button class="pill-button primary-pill" @onclick="() => PlaySongAsync(song)">播放</button>
+                        <button class="pill-button" @onclick="() => RemoveSongAsync(song)">移出歌单</button>
+                    </div>
+                </article>
+            }
+        </section>
+    }
+}
+
+@code {
+    [Parameter] public Guid PlaylistId { get; set; }
+
+    private PlaylistDetailsDto? playlist;
+    private string? errorMessage;
+    private string? actionMessage;
+    private bool isLoading;
+    private bool isEditing;
+    private bool isSaving;
+    private bool isDeleting;
+    private EditPlaylistModel editModel = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        Session.Changed += OnSessionChanged;
+        LibraryState.Changed += OnLibraryChanged;
+        await LoadPlaylistAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadPlaylistAsync();
+    }
+
+    private void OnSessionChanged() => _ = InvokeAsync(LoadPlaylistAsync);
+    private void OnLibraryChanged() => _ = InvokeAsync(LoadPlaylistAsync);
+
+    private async Task LoadPlaylistAsync()
+    {
+        if (!Session.IsReady || !Session.IsAuthenticated)
+        {
+            playlist = null;
+            return;
+        }
+
+        isLoading = true;
+        errorMessage = null;
+        StateHasChanged();
+
+        try
+        {
+            playlist = await CatalogApiClient.GetPlaylistDetailsAsync(Session.CurrentUser!.UserId, PlaylistId);
+            if (playlist is not null)
+            {
+                editModel = new EditPlaylistModel
+                {
+                    Name = playlist.Name,
+                    Description = playlist.Description ?? string.Empty,
+                    IsPublic = playlist.IsPublic
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OpenDetailsAsync(SongCardDto song)
+    {
+        var details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
+        if (details is not null)
+        {
+            PlayerState.OpenDetails(details);
+        }
+    }
+
+    private async Task PlaySongAsync(SongCardDto song)
+    {
+        var details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
+        if (details is not null)
+        {
+            PlayerState.Play(details);
+        }
+    }
+
+    private async Task RemoveSongAsync(SongCardDto song)
+    {
+        await CatalogApiClient.RemoveSongFromPlaylistAsync(new RemoveSongFromPlaylistRequest(
+            Session.CurrentUser!.UserId,
+            PlaylistId,
+            song.Id));
+
+        actionMessage = $"已将《{song.Title}》移出歌单。";
+        LibraryState.NotifyChanged();
+        await LoadPlaylistAsync();
+    }
+
+    private void ToggleEditMode()
+    {
+        if (playlist is null)
+        {
+            return;
+        }
+
+        if (!isEditing)
+        {
+            editModel = new EditPlaylistModel
+            {
+                Name = playlist.Name,
+                Description = playlist.Description ?? string.Empty,
+                IsPublic = playlist.IsPublic
+            };
+        }
+
+        actionMessage = null;
+        isEditing = !isEditing;
+    }
+
+    private void CancelEdit()
+    {
+        isEditing = false;
+        actionMessage = null;
+    }
+
+    private async Task SavePlaylistAsync()
+    {
+        if (playlist is null || Session.CurrentUser is null)
+        {
+            return;
+        }
+
+        isSaving = true;
+        actionMessage = null;
+
+        try
+        {
+            await CatalogApiClient.UpdatePlaylistAsync(playlist.Id, new UpdatePlaylistRequest(
+                Session.CurrentUser.UserId,
+                editModel.Name,
+                string.IsNullOrWhiteSpace(editModel.Description) ? null : editModel.Description,
+                editModel.IsPublic));
+
+            isEditing = false;
+            actionMessage = "歌单信息已更新。";
+            LibraryState.NotifyChanged();
+            await LoadPlaylistAsync();
+        }
+        catch (Exception ex)
+        {
+            actionMessage = ex.Message;
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private async Task DeletePlaylistAsync()
+    {
+        if (playlist is null || Session.CurrentUser is null)
+        {
+            return;
+        }
+
+        isDeleting = true;
+        actionMessage = null;
+
+        try
+        {
+            await CatalogApiClient.DeletePlaylistAsync(Session.CurrentUser.UserId, playlist.Id);
+            LibraryState.NotifyChanged();
+            Navigation.NavigateTo("/", forceLoad: false);
+        }
+        catch (Exception ex)
+        {
+            actionMessage = ex.Message;
+            isDeleting = false;
+        }
+    }
+
+    private static string FormatDuration(int seconds) =>
+        TimeSpan.FromSeconds(seconds).ToString(@"mm\:ss");
+
+    public void Dispose()
+    {
+        Session.Changed -= OnSessionChanged;
+        LibraryState.Changed -= OnLibraryChanged;
+    }
+
+    private sealed class EditPlaylistModel
+    {
+        [Required]
+        public string Name { get; set; } = string.Empty;
+
+        public string Description { get; set; } = string.Empty;
+
+        public bool IsPublic { get; set; }
+    }
+}

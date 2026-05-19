@@ -1,0 +1,123 @@
+@using System.Globalization
+@inject PreferenceState PreferenceState
+@implements IDisposable
+
+<article class="track-card @(IsLikedPage ? "liked-page-card" : "")">
+    <div class="track-card-header">
+        @if (ShowCheckbox)
+        {
+            <input type="checkbox" 
+                   class="track-checkbox" 
+                   checked="@IsSelected"
+                   @onchange="HandleCheckboxChange" />
+        }
+        
+        <button class="track-cover-button" @onclick="() => OnOpenDetails.InvokeAsync(Song)">
+            <ResilientImage Class="track-cover-image"
+                            Src="@Song.CoverUrl"
+                            Alt="@Song.Title"
+                            FallbackSrc="@CoverImageResolver.BuildSongCover(Song.Title, Song.Artist)" />
+            @if (!IsLikedPage)
+            {
+                <button class="track-play-badge" @onclick:stopPropagation="true" @onclick="() => OnPlay.InvokeAsync(Song)">▶</button>
+            }
+        </button>
+    </div>
+
+    <div class="track-content">
+        <div class="track-heading">
+            <h3>@Song.Title</h3>
+            <button class="ghost-icon-button" title="查看详情" @onclick="HandleOpenDetails">i</button>
+        </div>
+        <p class="track-subtitle">@Song.Artist</p>
+        <p class="track-meta">@Song.Album</p>
+
+        @if (!string.IsNullOrWhiteSpace(Reason))
+        {
+            <p class="track-reason">@Reason</p>
+        }
+
+        <div class="track-tags">
+            <span>@(string.IsNullOrWhiteSpace(Song.Genre) ? "Unknown" : Song.Genre)</span>
+            <span>@FormatDuration(Song.DurationSeconds)</span>
+            @if (Score.HasValue)
+            {
+                <span>@Score.Value.ToString("0.00", CultureInfo.InvariantCulture)</span>
+            }
+        </div>
+
+        @if (!IsLikedPage)
+        {
+            <div class="track-actions">
+                @if (ShowPlayButton)
+                {
+                    <button class="pill-button primary-pill action-btn" @onclick="() => OnPlay.InvokeAsync(Song)">播放</button>
+                }
+
+                @if (ShowPreferenceActions)
+                {
+                    <button class="pill-button action-btn like-btn"
+                            disabled="@PreferenceState.IsLiked(Song.Id)"
+                            @onclick="() => OnLike.InvokeAsync(Song)">
+                        @(PreferenceState.IsLiked(Song.Id) ? "♥ 已喜欢" : "♥ 喜欢")
+                    </button>
+                    <button class="pill-button action-btn dislike-btn"
+                            disabled="@PreferenceState.IsDisliked(Song.Id)"
+                            @onclick="() => OnDislike.InvokeAsync(Song)">
+                        @(PreferenceState.IsDisliked(Song.Id) ? "✗ 已不喜欢" : "✗ 不喜欢")
+                    </button>
+                }
+            </div>
+        }
+    </div>
+</article>
+
+@code {
+    [Parameter, EditorRequired] public SongCardDto Song { get; set; } = default!;
+    [Parameter] public string? Reason { get; set; }
+    [Parameter] public double? Score { get; set; }
+    [Parameter] public bool ShowPreferenceActions { get; set; }
+    [Parameter] public bool ShowPlayButton { get; set; } = true;
+    [Parameter] public bool IsLikedPage { get; set; }
+    [Parameter] public bool ShowCheckbox { get; set; }
+    [Parameter] public bool IsSelected { get; set; }
+    [Parameter] public EventCallback<SongCardDto> OnOpenDetails { get; set; }
+    [Parameter] public EventCallback<SongCardDto> OnPlay { get; set; }
+    [Parameter] public EventCallback<SongCardDto> OnLike { get; set; }
+    [Parameter] public EventCallback<SongCardDto> OnDislike { get; set; }
+    [Parameter] public EventCallback<SongCardDto> OnSelect { get; set; }
+    [Parameter] public EventCallback<SongCardDto> OnDeselect { get; set; }
+
+    protected override void OnInitialized()
+    {
+        PreferenceState.Changed += OnPreferenceChanged;
+    }
+
+    private void HandleCheckboxChange(ChangeEventArgs e)
+    {
+        var isChecked = (bool)e.Value!;
+        if (isChecked)
+        {
+            OnSelect.InvokeAsync(Song);
+        }
+        else
+        {
+            OnDeselect.InvokeAsync(Song);
+        }
+    }
+
+    private async Task HandleOpenDetails()
+    {
+        await OnOpenDetails.InvokeAsync(Song);
+    }
+
+    private static string FormatDuration(int seconds) =>
+        TimeSpan.FromSeconds(seconds).ToString(@"mm\:ss");
+
+    private void OnPreferenceChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        PreferenceState.Changed -= OnPreferenceChanged;
+    }
+}

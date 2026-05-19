@@ -1,0 +1,205 @@
+@inject UserSessionState Session
+@inject CatalogApiClient CatalogApiClient
+@inject LibraryState LibraryState
+@implements IDisposable
+
+<div class="sidebar-container">
+    <div class="sidebar-brand">
+        <span class="brand-icon">◉</span>
+        <div>
+            <span class="brand-text">.NET Music Hub</span>
+            <p class="brand-subtitle">个性化音乐推荐系统</p>
+        </div>
+    </div>
+
+    <nav class="sidebar-nav">
+        <div class="nav-section">
+            <span class="nav-section-title">发现</span>
+            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
+                <span class="nav-icon">⌂</span>
+                <span>为你推荐</span>
+            </NavLink>
+            <NavLink class="nav-link" href="cold-start">
+                <span class="nav-icon">◎</span>
+                <span>偏好冷启动</span>
+            </NavLink>
+            <NavLink class="nav-link" href="search">
+                <span class="nav-icon">⌕</span>
+                <span>搜索曲库</span>
+            </NavLink>
+            <NavLink class="nav-link" href="admin">
+                <span class="nav-icon">▤</span>
+                <span>后台管理</span>
+            </NavLink>
+        </div>
+
+        <div class="nav-section">
+            <div class="playlist-section-header">
+                <span class="nav-section-title">你的歌单</span>
+                @if (Session.IsAuthenticated)
+                {
+                    <button class="create-playlist-toggle" @onclick="ToggleCreateForm">＋ 创建</button>
+                }
+            </div>
+
+            @if (!Session.IsReady)
+            {
+                <p class="sidebar-help">正在恢复你的音乐库...</p>
+            }
+            else if (!Session.IsAuthenticated)
+            {
+                <p class="sidebar-help">登录后即可创建歌单并收藏音乐。</p>
+            }
+            else
+            {
+                @if (showCreateForm)
+                {
+                    <EditForm Model="createModel" OnValidSubmit="CreatePlaylistAsync">
+                        <DataAnnotationsValidator />
+                        <div class="sidebar-form">
+                            <input class="sidebar-input" @bind="createModel.Name" @bind:event="oninput" placeholder="新歌单名称" />
+                            <input class="sidebar-input" @bind="createModel.Description" @bind:event="oninput" placeholder="一句简介（可选）" />
+                            <button class="pill-button primary-pill" type="submit" disabled="@isCreating">
+                                @(isCreating ? "创建中..." : "保存歌单")
+                            </button>
+                        </div>
+                    </EditForm>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(message))
+                {
+                    <p class="sidebar-help">@message</p>
+                }
+
+                @if (isLoading)
+                {
+                    <p class="sidebar-help">正在同步你的音乐库...</p>
+                }
+                else
+                {
+                    @foreach (var playlist in playlists.Where(x => x.IsSystemPlaylist))
+                    {
+                        <NavLink class="nav-link playlist-link liked-playlist-link" href="my-likes">
+                            <span class="nav-icon">♥</span>
+                            <span>@playlist.Name</span>
+                            <span class="playlist-count">@playlist.SongCount</span>
+                        </NavLink>
+                    }
+
+                    @foreach (var playlist in playlists.Where(x => !x.IsSystemPlaylist))
+                    {
+                        <NavLink class="nav-link playlist-link" href="@($"playlist/{playlist.Id}")">
+                            <span class="nav-icon">@((playlist.IsPublic) ? "◌" : "♫")</span>
+                            <span>@playlist.Name</span>
+                            <span class="playlist-count">@playlist.SongCount</span>
+                        </NavLink>
+                    }
+                }
+            }
+        </div>
+    </nav>
+
+    <div class="sidebar-footer">
+        <p>基于.NET平台的个性化音乐推荐系统</p>
+    </div>
+</div>
+
+@code {
+    private List<PlaylistSummaryDto> playlists = [];
+    private bool isLoading;
+    private bool isCreating;
+    private bool showCreateForm;
+    private string? message;
+    private CreatePlaylistModel createModel = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        Session.Changed += OnStateChanged;
+        LibraryState.Changed += OnStateChanged;
+        await LoadPlaylistsAsync();
+    }
+
+    private void OnStateChanged() => _ = InvokeAsync(LoadPlaylistsAsync);
+
+    private async Task LoadPlaylistsAsync()
+    {
+        playlists = [];
+        message = null;
+
+        if (!Session.IsReady || !Session.IsAuthenticated)
+        {
+            StateHasChanged();
+            return;
+        }
+
+        isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            playlists = (await CatalogApiClient.GetPlaylistsAsync(Session.CurrentUser!.UserId)).ToList();
+        }
+        catch (Exception ex)
+        {
+            message = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ToggleCreateForm()
+    {
+        showCreateForm = !showCreateForm;
+        message = null;
+    }
+
+    private async Task CreatePlaylistAsync()
+    {
+        if (!Session.IsAuthenticated)
+        {
+            return;
+        }
+
+        isCreating = true;
+        message = null;
+
+        try
+        {
+            await CatalogApiClient.CreatePlaylistAsync(new CreatePlaylistRequest(
+                Session.CurrentUser!.UserId,
+                createModel.Name,
+                string.IsNullOrWhiteSpace(createModel.Description) ? null : createModel.Description));
+
+            createModel = new();
+            showCreateForm = false;
+            message = "歌单创建成功。";
+            LibraryState.NotifyChanged();
+            await LoadPlaylistsAsync();
+        }
+        catch (Exception ex)
+        {
+            message = ex.Message;
+        }
+        finally
+        {
+            isCreating = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        Session.Changed -= OnStateChanged;
+        LibraryState.Changed -= OnStateChanged;
+    }
+
+    private sealed class CreatePlaylistModel
+    {
+        [Required]
+        public string Name { get; set; } = string.Empty;
+
+        public string Description { get; set; } = string.Empty;
+    }
+}

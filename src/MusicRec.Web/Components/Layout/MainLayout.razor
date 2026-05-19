@@ -1,0 +1,131 @@
+@inherits LayoutComponentBase
+@inject UserSessionState Session
+@inject NavigationManager Navigation
+@inject IHttpClientFactory HttpClientFactory
+@inject IJSRuntime Js
+@implements IDisposable
+
+<div class="workspace-shell">
+    <div class="workspace-sidebar">
+        <NavMenu />
+    </div>
+
+    <main class="workspace-main">
+        <div class="workspace-topbar">
+            <div class="topbar-search">
+                <button class="round-icon-button" @onclick='() => Navigation.NavigateTo("/")'>⌂</button>
+                <div class="search-shell">
+                    <span>⌕</span>
+                    <input placeholder="想听点什么？"
+                           @bind="searchKeyword"
+                           @bind:event="oninput"
+                           @onkeydown="HandleSearchKeyDown" />
+                </div>
+            </div>
+
+            <div class="topbar-actions">
+                @if (!Session.IsReady)
+                {
+                    <span class="topbar-status">正在恢复会话...</span>
+                }
+                else if (Session.IsAuthenticated)
+                {
+                    <div class="topbar-user">
+                        <span class="user-avatar">@GetAvatar(Session.CurrentUser!.UserName)</span>
+                        <div class="user-meta">
+                            <strong>@Session.CurrentUser!.UserName</strong>
+                            <span>已登录</span>
+                        </div>
+                    </div>
+                    <button class="pill-button" @onclick="Logout">注销</button>
+                }
+                else
+                {
+                    <a class="pill-button ghost-pill" href="register">注册</a>
+                    <a class="pill-button primary-pill" href="login">登录</a>
+                }
+            </div>
+        </div>
+
+        <article class="workspace-content">
+            @Body
+        </article>
+    </main>
+
+    <SongDetailsDrawer />
+</div>
+
+<PlayerBar />
+
+<footer class="app-footer">
+    <div class="footer-content">
+        <p>本系统音乐库数据来自 <a href="https://spotify.com" target="_blank" rel="noreferrer">Spotify</a></p>
+        <div class="footer-contact">
+            <span>联系我们：</span>
+            <a href="mailto:daftpunkwav@gmail.com">daftpunkwav@gmail.com</a>
+            <span> / </span>
+            <a href="mailto:lucienshaw1125@gmail.com">lucienshaw1125@gmail.com</a>
+        </div>
+    </div>
+</footer>
+
+<div id="blazor-error-ui" data-nosnippet>
+    页面发生未处理异常。
+    <a href="." class="reload">重新加载</a>
+    <span class="dismiss">x</span>
+</div>
+
+@code {
+    private string searchKeyword = string.Empty;
+    private DotNetObjectReference<MainLayout>? dotNetRef;
+
+    protected override Task OnInitializedAsync()
+    {
+        Session.Changed += OnSessionChanged;
+        return Task.CompletedTask;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        dotNetRef = DotNetObjectReference.Create(this);
+
+        if (!Session.IsReady)
+        {
+            await Session.InitializeAsync();
+        }
+    }
+
+    private void OnSessionChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task Logout()
+    {
+        await Session.ClearAsync();
+        Navigation.NavigateTo("/", forceLoad: true);
+    }
+
+    private Task HandleSearchKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter" && !string.IsNullOrWhiteSpace(searchKeyword))
+        {
+            Navigation.NavigateTo($"/search?q={Uri.EscapeDataString(searchKeyword.Trim())}");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static string GetAvatar(string userName) =>
+        string.IsNullOrWhiteSpace(userName)
+            ? "乐"
+            : userName[..1].ToUpperInvariant();
+
+    public void Dispose()
+    {
+        Session.Changed -= OnSessionChanged;
+        dotNetRef?.Dispose();
+    }
+}

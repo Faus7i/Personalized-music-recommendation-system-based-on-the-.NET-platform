@@ -1,0 +1,260 @@
+@page "/"
+@inject UserSessionState Session
+@inject RecommendationApiClient RecommendationApiClient
+@inject CatalogApiClient CatalogApiClient
+@inject PlayerState PlayerState
+@inject LibraryState LibraryState
+@inject PreferenceState PreferenceState
+@implements IDisposable
+
+<PageTitle>首页 - SonicCanvas</PageTitle>
+
+<section class="hero-banner">
+    <div>
+        <p class="hero-badge">SonicCanvas</p>
+        <h1>把推荐系统做成真正可交互的音乐平台</h1>
+        <p class="hero-copy">
+            登录后即可创建歌单、标记喜欢/不喜欢、打开歌曲详情，并在底部播放器里试听整个平台的推荐内容。
+        </p>
+    </div>
+    <div class="hero-banner-actions">
+        @if (!Session.IsAuthenticated)
+        {
+            <a class="pill-button primary-pill" href="register">立即注册</a>
+            <a class="pill-button ghost-pill" href="login">已有账号去登录</a>
+        }
+        else
+        {
+            <button class="pill-button primary-pill" @onclick="RefreshRecommendationsAsync">刷新推荐</button>
+            <a class="pill-button ghost-pill" href="cold-start">继续完善偏好</a>
+        }
+    </div>
+</section>
+
+@if (!Session.IsReady)
+{
+    <div class="loading-container">
+        <div class="loading-spinner"></div>
+        <p>正在恢复你的会话状态...</p>
+    </div>
+}
+else if (!Session.IsAuthenticated)
+{
+    <section class="welcome-grid">
+        <article class="welcome-card">
+            <span>账户体系</span>
+            <h2>登录、注册、注销统一在顶部完成</h2>
+            <p>未登录显示登录/注册，登录后切换为头像与注销按钮，适合毕业设计展示完整账号流程。</p>
+        </article>
+        <article class="welcome-card">
+            <span>个性化推荐</span>
+            <h2>喜欢与不喜欢直接驱动推荐池</h2>
+            <p>推荐服务会结合你的反馈调整得分，优先推送更相关的歌曲与创作者。</p>
+        </article>
+        <article class="welcome-card">
+            <span>歌单与播放</span>
+            <h2>左侧歌单、右侧详情、底部播放器统一联动</h2>
+            <p>不仅能收藏到自建歌单，还能在同一工作台中查看详情和播放预览。</p>
+        </article>
+    </section>
+}
+else if (isLoading)
+{
+    <div class="loading-container">
+        <div class="loading-spinner"></div>
+        <p>正在为你计算新的推荐结果...</p>
+    </div>
+}
+else if (!string.IsNullOrWhiteSpace(errorMessage))
+{
+    <div class="alert-error">
+        <span class="alert-icon">⚠</span>
+        @errorMessage
+    </div>
+}
+else
+{
+    <section class="dashboard-section">
+        <div class="section-headline">
+            <div>
+                <h2>为你推荐</h2>
+                <p>根据你的搜索记录和偏好进行个性化推荐</p>
+            </div>
+            <button class="pill-button ghost-pill" @onclick="RefreshRecommendationsAsync">换一批</button>
+        </div>
+
+        @if (recommendedTracks.Any())
+        {
+            <div class="track-grid">
+                @foreach (var item in recommendedTracks.Take(4))
+                {
+                    <MusicTrackCard Song="@item.Song"
+                                    Reason="@item.Reason"
+                                    Score="@item.Score"
+                                    ShowPreferenceActions="true"
+                                    OnOpenDetails="OpenDetailsFromSongAsync"
+                                    OnPlay="PlayFromSongAsync"
+                                    OnLike="LikeSongAsync"
+                                    OnDislike="DislikeSongAsync" />
+                }
+            </div>
+        }
+        else
+        {
+            <div class="empty-state">
+                <p>暂无推荐内容，请先去搜索或探索偏好冷启动歌曲</p>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    private RecommendationResultDto? recommendationResult;
+    private List<TrackDisplayModel> recommendedTracks = [];
+    private HashSet<Guid> seenRecommendationSongIds = [];
+    private string? errorMessage;
+    private bool isLoading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Session.Changed += OnSessionChanged;
+        LibraryState.Changed += OnLibraryChanged;
+        await LoadDashboardAsync(resetSeenRecommendations: true);
+    }
+
+    private void OnSessionChanged() => _ = InvokeAsync(() => LoadDashboardAsync(resetSeenRecommendations: true));
+    private void OnLibraryChanged() => _ = InvokeAsync(() => LoadDashboardAsync(resetSeenRecommendations: true));
+
+    private async Task LoadDashboardAsync(bool excludeSeenRecommendations = false, bool resetSeenRecommendations = false)
+    {
+        if (resetSeenRecommendations)
+        {
+            seenRecommendationSongIds.Clear();
+        }
+
+        recommendationResult = null;
+        recommendedTracks = [];
+        errorMessage = null;
+
+        if (!Session.IsAuthenticated)
+        {
+            StateHasChanged();
+            return;
+        }
+
+        isLoading = true;
+
+        try
+        {
+            var excludeSongIds = excludeSeenRecommendations ? seenRecommendationSongIds.ToArray() : [];
+            recommendationResult = await RecommendationApiClient.GetRecommendationsAsync(Session.CurrentUser!.UserId, excludeSongIds);
+            
+            recommendedTracks = recommendationResult?.Items.Select(item => new TrackDisplayModel(
+                new SongCardDto(
+                    item.SongId,
+                    item.Title,
+                    item.Artist,
+                    item.Album,
+                    item.Genre,
+                    item.TempoTag,
+                    item.MoodTag,
+                    item.EnergyLevel,
+                    item.SpotifyUri,
+                    item.ExternalUrl,
+                    item.CoverUrl,
+                    item.AudioUrl,
+                    item.ReleaseDate,
+                    item.DurationSeconds,
+                    item.Score),
+                item.Reason,
+                item.Score)).ToList() ?? [];
+
+            if (excludeSeenRecommendations && recommendedTracks.Count == 0)
+            {
+                seenRecommendationSongIds.Clear();
+                recommendationResult = await RecommendationApiClient.GetRecommendationsAsync(Session.CurrentUser!.UserId);
+                recommendedTracks = recommendationResult?.Items.Select(item => new TrackDisplayModel(
+                    new SongCardDto(
+                        item.SongId,
+                        item.Title,
+                        item.Artist,
+                        item.Album,
+                        item.Genre,
+                        item.TempoTag,
+                        item.MoodTag,
+                        item.EnergyLevel,
+                        item.SpotifyUri,
+                        item.ExternalUrl,
+                        item.CoverUrl,
+                        item.AudioUrl,
+                        item.ReleaseDate,
+                        item.DurationSeconds,
+                        item.Score),
+                    item.Reason,
+                    item.Score)).ToList() ?? [];
+            }
+
+            foreach (var recommendationId in recommendedTracks.Select(x => x.Song.Id))
+            {
+                seenRecommendationSongIds.Add(recommendationId);
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RefreshRecommendationsAsync()
+    {
+        await LoadDashboardAsync(excludeSeenRecommendations: true);
+    }
+
+    private async Task OpenDetailsFromSongAsync(SongCardDto song)
+    {
+        var details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
+        if (details is not null)
+        {
+            PlayerState.OpenDetails(details);
+        }
+    }
+
+    private async Task PlayFromSongAsync(SongCardDto song)
+    {
+        var details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
+        if (details is not null)
+        {
+            PlayerState.Play(details);
+        }
+    }
+
+    private Task LikeSongAsync(SongCardDto song) => SubmitPreferenceAndRefreshAsync(song.Id, "like");
+
+    private Task DislikeSongAsync(SongCardDto song) => SubmitPreferenceAndRefreshAsync(song.Id, "dislike");
+
+    private async Task SubmitPreferenceAndRefreshAsync(Guid songId, string feedbackType)
+    {
+        var result = await CatalogApiClient.SubmitPreferenceAsync(new SubmitSongPreferenceRequest(
+            Session.CurrentUser!.UserId,
+            songId,
+            feedbackType,
+            "home"));
+
+        PreferenceState.Apply(result);
+        LibraryState.NotifyChanged();
+        await LoadDashboardAsync(resetSeenRecommendations: true);
+    }
+
+    public void Dispose()
+    {
+        Session.Changed -= OnSessionChanged;
+        LibraryState.Changed -= OnLibraryChanged;
+    }
+
+    private sealed record TrackDisplayModel(SongCardDto Song, string Reason, double Score);
+}

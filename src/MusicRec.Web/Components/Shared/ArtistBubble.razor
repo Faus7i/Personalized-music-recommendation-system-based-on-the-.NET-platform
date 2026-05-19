@@ -1,0 +1,15 @@
+<article class="artist-bubble">
+    <ResilientImage Class="artist-bubble-image"
+                    Src="@ImageUrl"
+                    Alt="@Name"
+                    FallbackSrc="@CoverImageResolver.BuildArtistImage(Name)" />
+    <div class="artist-bubble-body">
+        <h3>@Name</h3>
+        <p>艺人</p>
+    </div>
+</article>
+
+@code {
+    [Parameter, EditorRequired] public string Name { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string ImageUrl { get; set; } = string.Empty;
+}

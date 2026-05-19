@@ -1,0 +1,232 @@
+@inject PlayerState PlayerState
+@inject UserSessionState Session
+@inject CatalogApiClient CatalogApiClient
+@inject LibraryState LibraryState
+@inject PreferenceState PreferenceState
+@implements IDisposable
+
+<aside class="details-drawer @(PlayerState.IsDetailsOpen ? "open" : "")">
+    @if (PlayerState.SelectedSong is not null)
+    {
+        <button class="drawer-close" @onclick="CloseDrawer">×</button>
+
+        <div class="drawer-cover">
+            <ResilientImage Src="@PlayerState.SelectedSong.CoverUrl"
+                            Alt="@PlayerState.SelectedSong.Title"
+                            FallbackSrc="@CoverImageResolver.BuildSongCover(PlayerState.SelectedSong.Title, PlayerState.SelectedSong.Artist)" />
+        </div>
+
+        <div class="drawer-body">
+            <span class="drawer-kicker">歌曲详情</span>
+            <h2>@PlayerState.SelectedSong.Title</h2>
+            <p class="drawer-artist">@PlayerState.SelectedSong.Artist</p>
+            <p class="drawer-description">@PlayerState.SelectedSong.Description</p>
+
+            <div class="drawer-metadata">
+                <div>
+                    <span>专辑</span>
+                    <strong>@PlayerState.SelectedSong.Album</strong>
+                </div>
+                <div>
+                    <span>发行时间</span>
+                    <strong>@(PlayerState.SelectedSong.ReleaseDate?.ToString("yyyy-MM-dd") ?? "未知")</strong>
+                </div>
+                <div>
+                    <span>时长</span>
+                    <strong>@FormatDuration(PlayerState.SelectedSong.DurationSeconds)</strong>
+                </div>
+                <div>
+                    <span>风格</span>
+                    <strong>@PlayerState.SelectedSong.Genre</strong>
+                </div>
+            </div>
+
+            <div class="drawer-actions">
+                <button class="pill-button primary-pill" @onclick="PlayCurrentSong">立即播放</button>
+
+                @if (Session.IsAuthenticated)
+                {
+                    <button class="pill-button"
+                            disabled="@(PlayerState.SelectedSong is not null && PreferenceState.IsLiked(PlayerState.SelectedSong.Id))"
+                            @onclick='() => SubmitPreferenceAsync("like")'>
+                        @(PlayerState.SelectedSong is not null && PreferenceState.IsLiked(PlayerState.SelectedSong.Id) ? "已喜欢" : "喜欢")
+                    </button>
+                    <button class="pill-button"
+                            disabled="@(PlayerState.SelectedSong is not null && PreferenceState.IsDisliked(PlayerState.SelectedSong.Id))"
+                            @onclick='() => SubmitPreferenceAsync("dislike")'>
+                        @(PlayerState.SelectedSong is not null && PreferenceState.IsDisliked(PlayerState.SelectedSong.Id) ? "已不喜欢" : "不喜欢")
+                    </button>
+                }
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(statusMessage))
+            {
+                <div class="drawer-status">@statusMessage</div>
+            }
+
+            @if (Session.IsAuthenticated)
+            {
+                <section class="drawer-section">
+                    <div class="drawer-section-header">
+                        <h3>收藏到歌单</h3>
+                        <button class="ghost-link-button" @onclick="LoadPlaylistsAsync">刷新</button>
+                    </div>
+
+                    @if (isLoadingPlaylists)
+                    {
+                        <p class="drawer-help">正在加载歌单...</p>
+                    }
+                    else if (customPlaylists.Count == 0)
+                    {
+                        <p class="drawer-help">先在左侧创建一个歌单，再把歌曲收藏进来。</p>
+                    }
+                    else
+                    {
+                        <div class="drawer-playlists">
+                            @foreach (var playlist in customPlaylists)
+                            {
+                                <button class="playlist-chip" @onclick='() => AddToPlaylistAsync(playlist.Id)'>
+                                    @playlist.Name
+                                    <span>@playlist.SongCount 首</span>
+                                </button>
+                            }
+                        </div>
+                    }
+                </section>
+            }
+        </div>
+    }
+</aside>
+
+@code {
+    private List<PlaylistSummaryDto> customPlaylists = [];
+    private bool isLoadingPlaylists;
+    private string? statusMessage;
+
+    protected override void OnInitialized()
+    {
+        PlayerState.Changed += OnStateChanged;
+        Session.Changed += OnStateChanged;
+        LibraryState.Changed += OnStateChanged;
+        PreferenceState.Changed += OnStateChanged;
+    }
+
+    private void OnStateChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            if (Session.IsAuthenticated && PlayerState.IsDetailsOpen)
+            {
+                await LoadPlaylistsAsync();
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    private async Task LoadPlaylistsAsync()
+    {
+        if (!Session.IsAuthenticated)
+        {
+            customPlaylists = [];
+            return;
+        }
+
+        isLoadingPlaylists = true;
+        statusMessage = null;
+        StateHasChanged();
+
+        try
+        {
+            var playlists = await CatalogApiClient.GetPlaylistsAsync(Session.CurrentUser!.UserId);
+            customPlaylists = playlists.Where(x => !x.IsSystemPlaylist).ToList();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+        }
+        finally
+        {
+            isLoadingPlaylists = false;
+            StateHasChanged();
+        }
+    }
+
+    private void CloseDrawer()
+    {
+        PlayerState.CloseDetails();
+    }
+
+    private void PlayCurrentSong()
+    {
+        if (PlayerState.SelectedSong is not null)
+        {
+            PlayerState.Play(PlayerState.SelectedSong);
+        }
+    }
+
+    private async Task SubmitPreferenceAsync(string feedbackType)
+    {
+        if (!Session.IsAuthenticated || PlayerState.SelectedSong is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await CatalogApiClient.SubmitPreferenceAsync(new SubmitSongPreferenceRequest(
+                Session.CurrentUser!.UserId,
+                PlayerState.SelectedSong.Id,
+                feedbackType,
+                "details"));
+
+            PreferenceState.Apply(new SongPreferenceResultDto(
+                Session.CurrentUser!.UserId,
+                PlayerState.SelectedSong.Id,
+                feedbackType,
+                "details",
+                DateTimeOffset.UtcNow));
+            statusMessage = feedbackType == "like" ? "已加入喜欢偏好，推荐会随之更新。" : "已记录为不喜欢，系统会降低同类推荐。";
+            LibraryState.NotifyChanged();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+        }
+    }
+
+    private async Task AddToPlaylistAsync(Guid playlistId)
+    {
+        if (!Session.IsAuthenticated || PlayerState.SelectedSong is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await CatalogApiClient.AddSongToPlaylistAsync(new AddSongToPlaylistRequest(
+                Session.CurrentUser!.UserId,
+                playlistId,
+                PlayerState.SelectedSong.Id));
+
+            statusMessage = "已收藏到选中的歌单。";
+            LibraryState.NotifyChanged();
+            await LoadPlaylistsAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+        }
+    }
+
+    private static string FormatDuration(int seconds) =>
+        TimeSpan.FromSeconds(seconds).ToString(@"mm\:ss");
+
+    public void Dispose()
+    {
+        PlayerState.Changed -= OnStateChanged;
+        Session.Changed -= OnStateChanged;
+        LibraryState.Changed -= OnStateChanged;
+        PreferenceState.Changed -= OnStateChanged;
+    }
+}

@@ -1,0 +1,35 @@
+<img class="@Class"
+     src="@currentSource"
+     alt="@Alt"
+     @onerror="HandleError" />
+
+@code {
+    [Parameter] public string? Src { get; set; }
+    [Parameter] public string Alt { get; set; } = string.Empty;
+    [Parameter] public string FallbackSrc { get; set; } = string.Empty;
+    [Parameter] public string? Class { get; set; }
+
+    private string currentSource = string.Empty;
+    private string lastResolvedSource = string.Empty;
+
+    protected override void OnParametersSet()
+    {
+        var resolvedSource = CoverImageResolver.IsUsable(Src) ? Src! : FallbackSrc;
+
+        if (!string.Equals(resolvedSource, lastResolvedSource, StringComparison.Ordinal))
+        {
+            currentSource = resolvedSource;
+            lastResolvedSource = resolvedSource;
+        }
+    }
+
+    private void HandleError()
+    {
+        if (!string.IsNullOrWhiteSpace(FallbackSrc) &&
+            !string.Equals(currentSource, FallbackSrc, StringComparison.Ordinal))
+        {
+            currentSource = FallbackSrc;
+            StateHasChanged();
+        }
+    }
+}
