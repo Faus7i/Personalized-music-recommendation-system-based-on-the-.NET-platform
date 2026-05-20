@@ -2,6 +2,7 @@
 @inject SpotifyAuthService SpotifyAuthService
 @inject NavigationManager Navigation
 @inject IHttpClientFactory HttpClientFactory
+@inject IJSRuntime JSRuntime
 
 <PageTitle>Spotify 授权中 - SonicCanvas</PageTitle>
 
@@ -157,7 +158,4 @@
         return null;
     }
     #endregion
-
-    [Inject]
-    private IJSRuntime JSRuntime { get; set; } = default!;
 }

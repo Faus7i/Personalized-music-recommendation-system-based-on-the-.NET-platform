@@ -59,9 +59,9 @@ else
         {
             <MusicTrackCard Song="@song"
                             ShowPreferenceActions="true"
-                            ShowPlayButton="false"
+                            ShowPlayButton="true"
                             OnOpenDetails="OpenDetailsAsync"
-                            OnPlay='async value => await ShowPlayOptionsAsync(value)'
+                            OnPlay='async value => await PlaySongAsync(value)'
                             OnLike='async value => await SubmitPreferenceAsync(value, "like")'
                             OnDislike='async value => await SubmitPreferenceAsync(value, "dislike")' />
         }
@@ -196,6 +196,41 @@ else
 
     private bool showPlayModal;
     private SongCardDto? selectedSong;
+
+    private async Task PlaySongAsync(SongCardDto song)
+    {
+        SongDetailsDto details;
+        if (song.Id == Guid.Empty)
+        {
+            // Cold Start 歌曲，直接从 SongCardDto 构建
+            details = new SongDetailsDto(
+                song.Id,
+                song.Title,
+                song.Artist,
+                song.Album,
+                song.Genre,
+                song.TempoTag,
+                song.MoodTag,
+                song.EnergyLevel,
+                song.SpotifyUri,
+                song.ExternalUrl,
+                song.CoverUrl,
+                song.AudioUrl,
+                song.ReleaseDate,
+                song.DurationSeconds,
+                song.PopularityScore,
+                "Cold Start recommendation from Spotify");
+        }
+        else
+        {
+            details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
+        }
+
+        if (details is not null)
+        {
+            PlayerState.Play(details);
+        }
+    }
 
     private async Task ShowPlayOptionsAsync(SongCardDto song)
     {

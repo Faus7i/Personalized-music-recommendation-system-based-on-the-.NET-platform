@@ -1395,37 +1395,85 @@ img {
     font-size: 1.3rem;
 }
 
-@media (max-width: 768px) {
-    body {
-        padding-bottom: 180px;
-    }
-
-    .workspace-shell,
-    .player-shell {
-        padding-left: 12px;
-        padding-right: 12px;
-    }
-
-    .workspace-topbar,
-    .hero-banner,
-    .playlist-hero,
-    .player-bar,
-    .player-empty {
-        flex-direction: column;
-        align-items: stretch;
-    }
-
-    .welcome-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .batch-actions-overlay {
-        bottom: 200px;
-        right: 12px;
-        left: 12px;
-        justify-content: center;
-    }
+.spotify-connection-section {
+    padding: 16px;
+    border-top: 1px solid var(--panel-border);
+    margin-top: auto;
 }
+
+.spotify-connected,
+.spotify-disconnected {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.spotify-connected {
+    border: 1px solid rgba(30, 215, 96, 0.3);
+    background: rgba(30, 215, 96, 0.05);
+}
+
+.spotify-badge {
+    color: #1ed760;
+    font-size: 1.2rem;
+    line-height: 1;
+}
+
+.spotify-badge.disconnected {
+    color: var(--text-muted);
+}
+
+.spotify-user-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.spotify-user-info strong {
+    font-size: 0.9rem;
+    color: var(--text-main);
+}
+
+.spotify-user-info span {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+@media (max-width: 768px) {
+        body {
+            padding-bottom: 180px;
+        }
+
+        .workspace-shell,
+        .player-shell {
+            padding-left: 12px;
+            padding-right: 12px;
+        }
+
+        .workspace-topbar,
+        .hero-banner,
+        .playlist-hero,
+        .player-bar,
+        .player-empty {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .welcome-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .batch-actions-overlay {
+            bottom: 200px;
+            right: 12px;
+            left: 12px;
+            justify-content: center;
+        }
+    }
 
 .app-footer {
     padding: 20px 18px;

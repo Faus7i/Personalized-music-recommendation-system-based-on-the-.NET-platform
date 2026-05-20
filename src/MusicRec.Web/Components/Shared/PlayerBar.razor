@@ -31,7 +31,7 @@
                 </div>
             </div>
 
-            @if (UseSpotifyPlayback)
+            @if (UseSpotifyPlayback && !showFallbackDialog)
             {
                 <div class="spotify-player-shell">
                     <div class="spotify-player-head">
@@ -40,6 +40,10 @@
                             <button class="pill-button primary-pill" @onclick="ToggleSpotifyPlayAsync" disabled="@(!isSpotifyPlayerReady)">
                                 @(isSpotifyPlaying ? "暂停" : "播放")
                             </button>
+                            @if (HasPreview)
+                            {
+                                <button class="pill-button" @onclick="SwitchToPreview">使用预览音频</button>
+                            }
                         </div>
                     </div>
 
@@ -65,20 +69,30 @@
             }
             else if (HasPreview)
             {
-                <audio class="audio-player"
-                       controls
-                       autoplay
-                       src="@PlayerState.CurrentSong.AudioUrl"
-                       @onplay='() => TrackBehaviorAsync("play")'
-                       @onpause='() => TrackBehaviorAsync("pause")'
-                       @onended='() => TrackBehaviorAsync("complete", 1)'>
-                    你的浏览器不支持音频播放。
-                </audio>
+                <div class="preview-player-container">
+                    <audio class="audio-player"
+                           controls
+                           autoplay
+                           src="@PlayerState.CurrentSong.AudioUrl"
+                           @onplay='() => TrackBehaviorAsync("play")'
+                           @onpause='() => TrackBehaviorAsync("pause")'
+                           @onended='() => TrackBehaviorAsync("complete", 1)'>
+                        你的浏览器不支持音频播放。
+                    </audio>
+                    @if (UseSpotifyPlayback)
+                    {
+                        <button class="pill-button ghost-pill" style="margin-top: 8px" @onclick="SwitchToSpotify">尝试 Spotify 播放</button>
+                    }
+                </div>
             }
             else
             {
                 <div class="player-unavailable">
                     <strong>当前歌曲没有可用播放源</strong>
+                    @if (UseSpotifyPlayback)
+                    {
+                        <button class="pill-button" style="margin-top: 8px" @onclick="OpenSpotifyExternal">在 Spotify 打开</button>
+                    }
                 </div>
             }
         </div>
@@ -105,6 +119,7 @@
 @code {
     private DotNetObjectReference<PlayerBar>? dotNetRef;
     private Guid? lastHandledSongId;
+    private string? lastHandledSpotifyUri;
     private bool isSpotifyPlayerReady;
     private bool isSpotifyPlaying;
     private int spotifyPositionMs;
@@ -156,9 +171,11 @@
             await SpotifySession.InitializeAsync();
         }
 
-        if (UseSpotifyPlayback && lastHandledSongId != PlayerState.CurrentSong?.Id)
+        var currentSpotifyUri = PlayerState.CurrentSong?.SpotifyUri;
+        if (UseSpotifyPlayback && lastHandledSpotifyUri != currentSpotifyUri)
         {
             lastHandledSongId = PlayerState.CurrentSong?.Id;
+            lastHandledSpotifyUri = currentSpotifyUri;
             await TryPlayCurrentSongWithSpotifyAsync();
         }
     }
@@ -207,19 +224,46 @@
             var session = await SpotifyAuthService.EnsureValidSessionAsync();
             if (session is null)
             {
-                ShowFallbackDialog(
-                    "当前歌曲需要 Spotify 授权后才能站内播放。",
-                    FallbackActionMode.OpenExternal);
+                // 如果没有 Spotify 授权但有预览音频，自动切换到预览
+                if (HasPreview)
+                {
+                    Console.WriteLine("[Player] 未授权，切换到预览音频");
+                    showFallbackDialog = true;
+                    playbackErrorMessage = "Spotify 未授权，使用预览音频播放。";
+                    fallbackActionMode = FallbackActionMode.None;
+                    fallbackActionLabel = "关闭";
+                }
+                else
+                {
+                    ShowFallbackDialog(
+                        "当前歌曲需要 Spotify 授权后才能站内播放。",
+                        FallbackActionMode.OpenExternal);
+                }
                 return;
             }
 
             currentSpotifyAccessToken = session.AccessToken;
             await EnsureSpotifyPlayerReadyAsync(session.AccessToken);
+            
+            Console.WriteLine($"[Player] 准备播放: {PlayerState.CurrentSong.SpotifyUri}");
             await JS.InvokeVoidAsync("musicRecSpotifyPlayer.playUri", currentSpotifyAccessToken, PlayerState.CurrentSong.SpotifyUri);
         }
         catch (Exception ex)
         {
-            await HandlePlaybackExceptionAsync(ex);
+            Console.WriteLine($"[Player] 播放错误: {ex.Message}");
+            
+            // 如果有预览音频，自动切换到预览
+            if (HasPreview)
+            {
+                showFallbackDialog = true;
+                playbackErrorMessage = "Spotify 播放失败，使用预览音频播放。";
+                fallbackActionMode = FallbackActionMode.None;
+                fallbackActionLabel = "关闭";
+            }
+            else
+            {
+                await HandlePlaybackExceptionAsync(ex);
+            }
         }
     }
 
@@ -355,6 +399,27 @@
     private void CancelFallback()
     {
         showFallbackDialog = false;
+    }
+
+    private void SwitchToPreview()
+    {
+        showFallbackDialog = true;
+        playbackErrorMessage = "已切换到预览音频播放。";
+        fallbackActionMode = FallbackActionMode.None;
+        fallbackActionLabel = "关闭";
+    }
+
+    private void SwitchToSpotify()
+    {
+        showFallbackDialog = false;
+    }
+
+    private async Task OpenSpotifyExternal()
+    {
+        if (PlayerState.CurrentSong != null && !string.IsNullOrWhiteSpace(PlayerState.CurrentSong.ExternalUrl))
+        {
+            await JS.InvokeVoidAsync("open", PlayerState.CurrentSong.ExternalUrl, "_blank");
+        }
     }
 
     private async Task BeginSpotifyAuthorizationAsync()

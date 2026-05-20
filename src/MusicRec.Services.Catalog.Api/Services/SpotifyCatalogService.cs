@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
@@ -33,23 +34,66 @@ public sealed class SpotifyCatalogService(
     {
         if (!IsConfigured)
         {
-            throw new InvalidOperationException("Spotify credentials are not configured.");
+            return new SpotifyCatalogSearchResponseDto([], [], []);
         }
 
-        var token = await GetAccessTokenAsync(cancellationToken);
-        using var client = CreateApiClient(token);
-        using var response = await client.GetAsync(
-            $"search?q={Uri.EscapeDataString(query)}&type={Uri.EscapeDataString(searchType)}&limit=10",
-            cancellationToken);
-        await EnsureSuccessAsync(response, "Spotify search");
+        string? token = null;
+        try
+        {
+            token = await GetAccessTokenAsync(cancellationToken);
+        }
+        catch
+        {
+            return new SpotifyCatalogSearchResponseDto([], [], []);
+        }
 
-        var payload = await response.Content.ReadFromJsonAsync<SpotifySearchResponse>(cancellationToken: cancellationToken)
-            ?? new SpotifySearchResponse();
+        int maxRetries = 3;
+        int delaySeconds = 5;
 
-        return new SpotifyCatalogSearchResponseDto(
-            payload.Tracks.Items.Select(MapTrack).ToList(),
-            payload.Albums.Items.Select(MapAlbum).ToList(),
-            payload.Artists.Items.Select(MapArtist).ToList());
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                using var client = CreateApiClient(token!);
+                using var response = await client.GetAsync(
+                    $"search?q={Uri.EscapeDataString(query)}&type={Uri.EscapeDataString(searchType)}&limit=10",
+                    cancellationToken);
+
+                if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    if (attempt >= maxRetries)
+                    {
+                        return new SpotifyCatalogSearchResponseDto([], [], []);
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds * attempt), cancellationToken);
+                    continue;
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return new SpotifyCatalogSearchResponseDto([], [], []);
+                }
+
+                var payload = await response.Content.ReadFromJsonAsync<SpotifySearchResponse>(cancellationToken: cancellationToken)
+                    ?? new SpotifySearchResponse();
+
+                return new SpotifyCatalogSearchResponseDto(
+                    payload.Tracks.Items.Select(MapTrack).ToList(),
+                    payload.Albums.Items.Select(MapAlbum).ToList(),
+                    payload.Artists.Items.Select(MapArtist).ToList());
+            }
+            catch
+            {
+                if (attempt >= maxRetries)
+                {
+                    return new SpotifyCatalogSearchResponseDto([], [], []);
+                }
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds * attempt), cancellationToken);
+            }
+        }
+
+        return new SpotifyCatalogSearchResponseDto([], [], []);
     }
 
     public async Task<IReadOnlyList<SpotifyTrackSearchItemDto>> GetTracksAsync(
@@ -71,6 +115,7 @@ public sealed class SpotifyCatalogService(
         using var response = await client.GetAsync(
             $"tracks?ids={string.Join(",", spotifyTrackIds)}",
             cancellationToken);
+
         await EnsureSuccessAsync(response, "Spotify tracks");
 
         var payload = await response.Content.ReadFromJsonAsync<SpotifyTracksResponse>(cancellationToken: cancellationToken)
@@ -99,6 +144,7 @@ public sealed class SpotifyCatalogService(
 
         using var client = httpClientFactory.CreateClient();
         client.BaseAddress = new Uri(spotifyOptions.AccountsBaseUrl);
+        client.Timeout = TimeSpan.FromSeconds(30);
         var request = new HttpRequestMessage(HttpMethod.Post, "api/token");
         var credentials = Convert.ToBase64String(
             System.Text.Encoding.UTF8.GetBytes($"{spotifyOptions.ClientId}:{spotifyOptions.ClientSecret}"));
@@ -126,6 +172,7 @@ public sealed class SpotifyCatalogService(
         var client = httpClientFactory.CreateClient();
         client.BaseAddress = new Uri(spotifyOptions.ApiBaseUrl);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        client.Timeout = TimeSpan.FromSeconds(30);
         return client;
     }
 

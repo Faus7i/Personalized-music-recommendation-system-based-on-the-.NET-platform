@@ -90,6 +90,7 @@ catalogGroup.MapGet("/cold-start", async (int? count, CatalogDbContext dbContext
         {
             var tracks = await spotifyService.SearchTracksAsync(keyword);
             allTracks.AddRange(tracks.Select(t => (t, CapitalizeFirstLetter(keyword))));
+            await Task.Delay(1000);
         }
         catch
         {

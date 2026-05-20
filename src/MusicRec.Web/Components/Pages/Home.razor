@@ -217,7 +217,33 @@ else
 
     private async Task OpenDetailsFromSongAsync(SongCardDto song)
     {
-        var details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
+        SongDetailsDto? details;
+        if (song.Id == Guid.Empty)
+        {
+            // Cold Start 歌曲，直接从 SongCardDto 构建
+            details = new SongDetailsDto(
+                song.Id,
+                song.Title,
+                song.Artist,
+                song.Album,
+                song.Genre,
+                song.TempoTag,
+                song.MoodTag,
+                song.EnergyLevel,
+                song.SpotifyUri,
+                song.ExternalUrl,
+                song.CoverUrl,
+                song.AudioUrl,
+                song.ReleaseDate,
+                song.DurationSeconds,
+                song.PopularityScore,
+                "Cold Start recommendation from Spotify");
+        }
+        else
+        {
+            details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
+        }
+
         if (details is not null)
         {
             PlayerState.OpenDetails(details);
@@ -226,28 +252,90 @@ else
 
     private async Task PlayFromSongAsync(SongCardDto song)
     {
-        var details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
+        SongDetailsDto? details;
+        if (song.Id == Guid.Empty)
+        {
+            // Cold Start 歌曲，直接从 SongCardDto 构建
+            details = new SongDetailsDto(
+                song.Id,
+                song.Title,
+                song.Artist,
+                song.Album,
+                song.Genre,
+                song.TempoTag,
+                song.MoodTag,
+                song.EnergyLevel,
+                song.SpotifyUri,
+                song.ExternalUrl,
+                song.CoverUrl,
+                song.AudioUrl,
+                song.ReleaseDate,
+                song.DurationSeconds,
+                song.PopularityScore,
+                "Cold Start recommendation from Spotify");
+        }
+        else
+        {
+            details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
+        }
+
         if (details is not null)
         {
             PlayerState.Play(details);
         }
     }
 
-    private Task LikeSongAsync(SongCardDto song) => SubmitPreferenceAndRefreshAsync(song.Id, "like");
+    private Task LikeSongAsync(SongCardDto song) => SubmitPreferenceAndRefreshAsync(song, "like");
 
-    private Task DislikeSongAsync(SongCardDto song) => SubmitPreferenceAndRefreshAsync(song.Id, "dislike");
+    private Task DislikeSongAsync(SongCardDto song) => SubmitPreferenceAndRefreshAsync(song, "dislike");
 
-    private async Task SubmitPreferenceAndRefreshAsync(Guid songId, string feedbackType)
+    private async Task SubmitPreferenceAndRefreshAsync(SongCardDto song, string feedbackType)
     {
-        var result = await CatalogApiClient.SubmitPreferenceAsync(new SubmitSongPreferenceRequest(
-            Session.CurrentUser!.UserId,
-            songId,
-            feedbackType,
-            "home"));
+        Guid songId = song.Id;
+        
+        // 如果是 Cold Start 歌曲，先保存到数据库
+        if (songId == Guid.Empty)
+        {
+            try
+            {
+                var spotifyTrackId = song.SpotifyUri?.Split(':').LastOrDefault();
+                if (!string.IsNullOrWhiteSpace(spotifyTrackId))
+                {
+                    var savedSong = await CatalogApiClient.EnsureSpotifyTrackAsync(new EnsureSpotifyTrackRequest(
+                        spotifyTrackId,
+                        song.Genre,
+                        song.SpotifyUri,
+                        song.Title,
+                        song.Artist,
+                        song.Album,
+                        song.AudioUrl,
+                        song.CoverUrl,
+                        song.ExternalUrl,
+                        song.DurationSeconds,
+                        (int)(song.PopularityScore * 100),
+                        song.ReleaseDate?.ToString("yyyy-MM-dd")));
+                    songId = savedSong.Id;
+                }
+            }
+            catch
+            {
+                // 如果保存失败，跳过
+                return;
+            }
+        }
 
-        PreferenceState.Apply(result);
-        LibraryState.NotifyChanged();
-        await LoadDashboardAsync(resetSeenRecommendations: true);
+        if (songId != Guid.Empty)
+        {
+            var result = await CatalogApiClient.SubmitPreferenceAsync(new SubmitSongPreferenceRequest(
+                Session.CurrentUser!.UserId,
+                songId,
+                feedbackType,
+                "home"));
+
+            PreferenceState.Apply(result);
+            LibraryState.NotifyChanged();
+            await LoadDashboardAsync(resetSeenRecommendations: true);
+        }
     }
 
     public void Dispose()

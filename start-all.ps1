@@ -74,9 +74,9 @@ foreach ($service in $services) {
 
 Write-Host ""
 Write-Host "Startup commands have been sent." -ForegroundColor Cyan
-Write-Host "Web URL: http://localhost:5175" -ForegroundColor Cyan
+Write-Host "Web URL: http://127.0.0.1:5175" -ForegroundColor Cyan
 
 if (-not $NoBrowser) {
     Start-Sleep -Seconds 4
-    Start-Process "http://localhost:5175" | Out-Null
+    Start-Process "http://127.0.0.1:5175" | Out-Null
 }
