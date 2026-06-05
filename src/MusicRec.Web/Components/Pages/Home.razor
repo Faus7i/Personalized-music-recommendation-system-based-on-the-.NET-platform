@@ -1,10 +1,11 @@
 @page "/"
 @inject UserSessionState Session
-@inject RecommendationApiClient RecommendationApiClient
 @inject CatalogApiClient CatalogApiClient
 @inject PlayerState PlayerState
 @inject LibraryState LibraryState
 @inject PreferenceState PreferenceState
+@inject NavigationManager Navigation
+@inject IJSRuntime JSRuntime
 @implements IDisposable
 
 <PageTitle>首页 - SonicCanvas</PageTitle>
@@ -25,7 +26,7 @@
         }
         else
         {
-            <button class="pill-button primary-pill" @onclick="RefreshRecommendationsAsync">刷新推荐</button>
+            <button class="pill-button primary-pill" @onclick="RefreshSongsAsync">刷新推荐</button>
             <a class="pill-button ghost-pill" href="cold-start">继续完善偏好</a>
         }
     </div>
@@ -62,7 +63,7 @@ else if (isLoading)
 {
     <div class="loading-container">
         <div class="loading-spinner"></div>
-        <p>正在为你计算新的推荐结果...</p>
+        <p>正在从 Spotify 获取最新推荐歌曲...</p>
     </div>
 }
 else if (!string.IsNullOrWhiteSpace(errorMessage))
@@ -78,62 +79,70 @@ else
         <div class="section-headline">
             <div>
                 <h2>为你推荐</h2>
-                <p>根据你的搜索记录和偏好进行个性化推荐</p>
+                <p>实时从 Spotify 在线曲库中随机推荐 @songs.Count 首歌曲</p>
             </div>
-            <button class="pill-button ghost-pill" @onclick="RefreshRecommendationsAsync">换一批</button>
+            <button class="pill-button ghost-pill" @onclick="RefreshSongsAsync">换一批</button>
         </div>
 
-        @if (recommendedTracks.Any())
+        @if (songs.Any())
         {
             <div class="track-grid">
-                @foreach (var item in recommendedTracks.Take(4))
+                @foreach (var song in songs)
                 {
-                    <MusicTrackCard Song="@item.Song"
-                                    Reason="@item.Reason"
-                                    Score="@item.Score"
+                    <MusicTrackCard Song="@song"
                                     ShowPreferenceActions="true"
-                                    OnOpenDetails="OpenDetailsFromSongAsync"
-                                    OnPlay="PlayFromSongAsync"
-                                    OnLike="LikeSongAsync"
-                                    OnDislike="DislikeSongAsync" />
+                                    ShowPlayButton="true"
+                                    OnOpenDetails="OpenDetailsAsync"
+                                    OnPlay='async value => await PlaySongAsync(value)'
+                                    OnLike='async value => await SubmitPreferenceAsync(value, "like")'
+                                    OnDislike='async value => await SubmitPreferenceAsync(value, "dislike")' />
                 }
             </div>
+
+            @if (showPlayModal)
+            {
+                <div class="modal-overlay" @onclick="ClosePlayModal">
+                    <div class="modal-content" @onclick:stopPropagation="true">
+                        <h3>选择播放方式</h3>
+                        <p>@selectedSong?.Title - @selectedSong?.Artist</p>
+                        <div class="modal-actions">
+                            <button class="pill-button primary-pill" @onclick="PlayPreview">播放预览音频</button>
+                            <button class="pill-button" @onclick="OpenSpotify">在 Spotify 中播放</button>
+                            <button class="pill-button ghost-pill" @onclick="ClosePlayModal">取消</button>
+                        </div>
+                    </div>
+                </div>
+            }
         }
         else
         {
             <div class="empty-state">
-                <p>暂无推荐内容，请先去搜索或探索偏好冷启动歌曲</p>
+                <p>暂无推荐内容，请检查 Spotify 连接后点击"换一批"重试</p>
             </div>
         }
     </section>
 }
 
 @code {
-    private RecommendationResultDto? recommendationResult;
-    private List<TrackDisplayModel> recommendedTracks = [];
-    private HashSet<Guid> seenRecommendationSongIds = [];
+    private List<SongCardDto> songs = [];
     private string? errorMessage;
     private bool isLoading;
+    private bool showPlayModal;
+    private SongCardDto? selectedSong;
 
     protected override async Task OnInitializedAsync()
     {
         Session.Changed += OnSessionChanged;
         LibraryState.Changed += OnLibraryChanged;
-        await LoadDashboardAsync(resetSeenRecommendations: true);
+        await LoadSongsAsync();
     }
 
-    private void OnSessionChanged() => _ = InvokeAsync(() => LoadDashboardAsync(resetSeenRecommendations: true));
-    private void OnLibraryChanged() => _ = InvokeAsync(() => LoadDashboardAsync(resetSeenRecommendations: true));
+    private void OnSessionChanged() => _ = InvokeAsync(LoadSongsAsync);
+    private void OnLibraryChanged() => _ = InvokeAsync(StateHasChanged);
 
-    private async Task LoadDashboardAsync(bool excludeSeenRecommendations = false, bool resetSeenRecommendations = false)
+    private async Task LoadSongsAsync()
     {
-        if (resetSeenRecommendations)
-        {
-            seenRecommendationSongIds.Clear();
-        }
-
-        recommendationResult = null;
-        recommendedTracks = [];
+        songs = [];
         errorMessage = null;
 
         if (!Session.IsAuthenticated)
@@ -146,58 +155,7 @@ else
 
         try
         {
-            var excludeSongIds = excludeSeenRecommendations ? seenRecommendationSongIds.ToArray() : [];
-            recommendationResult = await RecommendationApiClient.GetRecommendationsAsync(Session.CurrentUser!.UserId, excludeSongIds);
-            
-            recommendedTracks = recommendationResult?.Items.Select(item => new TrackDisplayModel(
-                new SongCardDto(
-                    item.SongId,
-                    item.Title,
-                    item.Artist,
-                    item.Album,
-                    item.Genre,
-                    item.TempoTag,
-                    item.MoodTag,
-                    item.EnergyLevel,
-                    item.SpotifyUri,
-                    item.ExternalUrl,
-                    item.CoverUrl,
-                    item.AudioUrl,
-                    item.ReleaseDate,
-                    item.DurationSeconds,
-                    item.Score),
-                item.Reason,
-                item.Score)).ToList() ?? [];
-
-            if (excludeSeenRecommendations && recommendedTracks.Count == 0)
-            {
-                seenRecommendationSongIds.Clear();
-                recommendationResult = await RecommendationApiClient.GetRecommendationsAsync(Session.CurrentUser!.UserId);
-                recommendedTracks = recommendationResult?.Items.Select(item => new TrackDisplayModel(
-                    new SongCardDto(
-                        item.SongId,
-                        item.Title,
-                        item.Artist,
-                        item.Album,
-                        item.Genre,
-                        item.TempoTag,
-                        item.MoodTag,
-                        item.EnergyLevel,
-                        item.SpotifyUri,
-                        item.ExternalUrl,
-                        item.CoverUrl,
-                        item.AudioUrl,
-                        item.ReleaseDate,
-                        item.DurationSeconds,
-                        item.Score),
-                    item.Reason,
-                    item.Score)).ToList() ?? [];
-            }
-
-            foreach (var recommendationId in recommendedTracks.Select(x => x.Song.Id))
-            {
-                seenRecommendationSongIds.Add(recommendationId);
-            }
+            songs = (await CatalogApiClient.GetColdStartSongsAsync(20)).ToList();
         }
         catch (Exception ex)
         {
@@ -210,17 +168,66 @@ else
         }
     }
 
-    private async Task RefreshRecommendationsAsync()
+    private async Task RefreshSongsAsync()
     {
-        await LoadDashboardAsync(excludeSeenRecommendations: true);
+        await LoadSongsAsync();
     }
 
-    private async Task OpenDetailsFromSongAsync(SongCardDto song)
+    private async Task SubmitPreferenceAsync(SongCardDto song, string feedbackType)
     {
-        SongDetailsDto? details;
+        if (!Session.IsAuthenticated)
+        {
+            Navigation.NavigateTo("/login");
+            return;
+        }
+
+        try
+        {
+            SongCardDto savedSong;
+
+            if (song.Id == Guid.Empty)
+            {
+                savedSong = await CatalogApiClient.EnsureSpotifyTrackAsync(new EnsureSpotifyTrackRequest(
+                    song.SpotifyUri?.Split(':').LastOrDefault() ?? string.Empty,
+                    song.Genre,
+                    song.SpotifyUri,
+                    song.Title,
+                    song.Artist,
+                    song.Album,
+                    song.AudioUrl,
+                    song.CoverUrl,
+                    song.ExternalUrl,
+                    song.DurationSeconds,
+                    (int)song.PopularityScore,
+                    song.ReleaseDate?.ToString("yyyy-MM-dd")));
+            }
+            else
+            {
+                savedSong = song;
+            }
+
+            var result = await CatalogApiClient.SubmitPreferenceAsync(new SubmitSongPreferenceRequest(
+                Session.CurrentUser!.UserId,
+                savedSong.Id,
+                feedbackType,
+                "home"));
+
+            PreferenceState.Apply(result);
+            songs.Remove(song);
+            LibraryState.NotifyChanged();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PlaySongAsync(SongCardDto song)
+    {
+        SongDetailsDto details;
         if (song.Id == Guid.Empty)
         {
-            // Cold Start 歌曲，直接从 SongCardDto 构建
             details = new SongDetailsDto(
                 song.Id,
                 song.Title,
@@ -237,42 +244,7 @@ else
                 song.ReleaseDate,
                 song.DurationSeconds,
                 song.PopularityScore,
-                "Cold Start recommendation from Spotify");
-        }
-        else
-        {
-            details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
-        }
-
-        if (details is not null)
-        {
-            PlayerState.OpenDetails(details);
-        }
-    }
-
-    private async Task PlayFromSongAsync(SongCardDto song)
-    {
-        SongDetailsDto? details;
-        if (song.Id == Guid.Empty)
-        {
-            // Cold Start 歌曲，直接从 SongCardDto 构建
-            details = new SongDetailsDto(
-                song.Id,
-                song.Title,
-                song.Artist,
-                song.Album,
-                song.Genre,
-                song.TempoTag,
-                song.MoodTag,
-                song.EnergyLevel,
-                song.SpotifyUri,
-                song.ExternalUrl,
-                song.CoverUrl,
-                song.AudioUrl,
-                song.ReleaseDate,
-                song.DurationSeconds,
-                song.PopularityScore,
-                "Cold Start recommendation from Spotify");
+                "Spotify 实时推荐歌曲");
         }
         else
         {
@@ -285,57 +257,64 @@ else
         }
     }
 
-    private Task LikeSongAsync(SongCardDto song) => SubmitPreferenceAndRefreshAsync(song, "like");
-
-    private Task DislikeSongAsync(SongCardDto song) => SubmitPreferenceAndRefreshAsync(song, "dislike");
-
-    private async Task SubmitPreferenceAndRefreshAsync(SongCardDto song, string feedbackType)
+    private async Task OpenDetailsAsync(SongCardDto song)
     {
-        Guid songId = song.Id;
-        
-        // 如果是 Cold Start 歌曲，先保存到数据库
-        if (songId == Guid.Empty)
+        try
         {
-            try
+            SongCardDto savedSong = song;
+
+            if (song.Id == Guid.Empty)
             {
-                var spotifyTrackId = song.SpotifyUri?.Split(':').LastOrDefault();
-                if (!string.IsNullOrWhiteSpace(spotifyTrackId))
-                {
-                    var savedSong = await CatalogApiClient.EnsureSpotifyTrackAsync(new EnsureSpotifyTrackRequest(
-                        spotifyTrackId,
-                        song.Genre,
-                        song.SpotifyUri,
-                        song.Title,
-                        song.Artist,
-                        song.Album,
-                        song.AudioUrl,
-                        song.CoverUrl,
-                        song.ExternalUrl,
-                        song.DurationSeconds,
-                        (int)(song.PopularityScore * 100),
-                        song.ReleaseDate?.ToString("yyyy-MM-dd")));
-                    songId = savedSong.Id;
-                }
+                savedSong = await CatalogApiClient.EnsureSpotifyTrackAsync(new EnsureSpotifyTrackRequest(
+                    song.SpotifyUri?.Split(':').LastOrDefault() ?? string.Empty,
+                    song.Genre,
+                    song.SpotifyUri,
+                    song.Title,
+                    song.Artist,
+                    song.Album,
+                    song.AudioUrl,
+                    song.CoverUrl,
+                    song.ExternalUrl,
+                    song.DurationSeconds,
+                    (int)song.PopularityScore,
+                    song.ReleaseDate?.ToString("yyyy-MM-dd")));
             }
-            catch
+
+            var details = await CatalogApiClient.GetSongDetailsAsync(savedSong.Id);
+            if (details is not null)
             {
-                // 如果保存失败，跳过
-                return;
+                PlayerState.OpenDetails(details);
             }
         }
-
-        if (songId != Guid.Empty)
+        catch (Exception ex)
         {
-            var result = await CatalogApiClient.SubmitPreferenceAsync(new SubmitSongPreferenceRequest(
-                Session.CurrentUser!.UserId,
-                songId,
-                feedbackType,
-                "home"));
-
-            PreferenceState.Apply(result);
-            LibraryState.NotifyChanged();
-            await LoadDashboardAsync(resetSeenRecommendations: true);
+            errorMessage = ex.Message;
+            StateHasChanged();
         }
+    }
+
+    private async Task PlayPreview()
+    {
+        if (selectedSong != null && !string.IsNullOrWhiteSpace(selectedSong.AudioUrl))
+        {
+            await JSRuntime.InvokeVoidAsync("playAudio", selectedSong.AudioUrl);
+        }
+        ClosePlayModal();
+    }
+
+    private async Task OpenSpotify()
+    {
+        if (selectedSong != null && !string.IsNullOrWhiteSpace(selectedSong.ExternalUrl))
+        {
+            await JSRuntime.InvokeVoidAsync("open", selectedSong.ExternalUrl, "_blank");
+        }
+        ClosePlayModal();
+    }
+
+    private void ClosePlayModal()
+    {
+        showPlayModal = false;
+        selectedSong = null;
     }
 
     public void Dispose()
@@ -343,6 +322,4 @@ else
         Session.Changed -= OnSessionChanged;
         LibraryState.Changed -= OnLibraryChanged;
     }
-
-    private sealed record TrackDisplayModel(SongCardDto Song, string Reason, double Score);
 }
