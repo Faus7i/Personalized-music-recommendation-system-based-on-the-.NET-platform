@@ -1,0 +1,374 @@
+@page "/search"
+@inject CatalogApiClient CatalogApiClient
+@inject PlayerState PlayerState
+@inject UserSessionState Session
+@inject LibraryState LibraryState
+@inject PreferenceState PreferenceState
+
+<PageTitle>搜索 - SonicCanvas</PageTitle>
+
+<section class="dashboard-section">
+    <div class="section-headline">
+        <div>
+            <h2>搜索 Spotify 曲库</h2>
+            <p>实时搜索 Spotify 全球曲库中的歌曲、专辑和歌手，并在交互时按需同步到本地系统</p>
+        </div>
+    </div>
+
+    <div class="sidebar-form">
+        <input class="sidebar-input" @bind="keyword" @bind:event="oninput" placeholder="输入歌曲名 / 歌手 / 专辑" />
+        <button class="pill-button primary-pill" @onclick="SearchAsync" disabled="@isLoading">
+            @(isLoading ? "搜索中..." : "开始搜索")
+        </button>
+    </div>
+
+    <div class="track-actions">
+        <button class="@GetFilterClass("all")" @onclick='() => ChangeFilterAsync("all")'>全部</button>
+        <button class="@GetFilterClass("track")" @onclick='() => ChangeFilterAsync("track")'>歌曲</button>
+        <button class="@GetFilterClass("album")" @onclick='() => ChangeFilterAsync("album")'>专辑</button>
+        <button class="@GetFilterClass("artist")" @onclick='() => ChangeFilterAsync("artist")'>歌手</button>
+    </div>
+</section>
+
+@if (!string.IsNullOrWhiteSpace(errorMessage))
+{
+    <div class="alert-error">
+        <span class="alert-icon">⚠</span>
+        @errorMessage
+    </div>
+}
+else if (hasSearched && TotalResults == 0)
+{
+    <div class="empty-state">
+        <div class="empty-icon">⌕</div>
+        <h3>没有找到匹配结果</h3>
+        <p>可以尝试缩短关键词，或切换歌手 / 专辑名称继续搜索。</p>
+    </div>
+}
+else if (TotalResults > 0)
+{
+    @if (ShowTracks)
+    {
+        <section class="dashboard-section">
+            <div class="section-headline">
+                <div>
+                    <h2>歌曲结果</h2>
+                    <p>共找到 @searchResults.Tracks.Count 首可直接交互的 Spotify 曲目</p>
+                </div>
+            </div>
+
+            <div class="track-grid">
+                @foreach (var track in searchResults.Tracks)
+                {
+                    <article class="track-card">
+                        <ResilientImage Class="track-cover-image"
+                                        Src="@track.CoverUrl"
+                                        Alt="@track.Title"
+                                        FallbackSrc="@CoverImageResolver.BuildSongCover(track.Title, track.Artist)" />
+                        <div class="track-content">
+                            <div class="track-heading">
+                                <h3>@track.Title</h3>
+                                <div class="track-heading-actions">
+                                    <button class="ghost-icon-button" @onclick="() => OpenTrackDetailsAsync(track)" title="查看详情">i</button>
+                                    <a class="ghost-icon-button" href="@track.ExternalUrl" target="_blank" rel="noreferrer" title="在Spotify中打开">↗</a>
+                                </div>
+                            </div>
+                            <p class="track-subtitle">@track.Artist</p>
+                            <p class="track-meta">@track.Album</p>
+                            <div class="track-tags">
+                                <span>@FormatDuration(track.DurationSeconds)</span>
+                                <span>热度 @track.Popularity</span>
+                                @if (!string.IsNullOrWhiteSpace(track.ReleaseDate))
+                                {
+                                    <span>@track.ReleaseDate</span>
+                                }
+                                @if (track.IsExplicit)
+                                {
+                                    <span>Explicit</span>
+                                }
+                            </div>
+                            <div class="track-actions">
+                                <button class="action-btn primary-action" @onclick="() => PlayTrackAsync(track)">播放</button>
+                                @if (Session.IsAuthenticated)
+                                {
+                                    <button class="action-btn like-action"
+                                            @onclick="() => LikeTrackAsync(track)">
+                                        ♥ 喜欢
+                                    </button>
+                                    <button class="action-btn dislike-action"
+                                            @onclick="() => DislikeTrackAsync(track)">
+                                        ✗ 不喜欢
+                                    </button>
+                                }
+                            </div>
+                        </div>
+                    </article>
+                }
+            </div>
+        </section>
+    }
+
+    @if (ShowAlbums && searchResults.Albums.Count > 0)
+    {
+        <section class="dashboard-section">
+            <div class="section-headline">
+                <div>
+                    <h2>专辑结果</h2>
+                    <p>共找到 @searchResults.Albums.Count 张相关专辑</p>
+                </div>
+            </div>
+
+            <div class="track-grid">
+                @foreach (var album in searchResults.Albums)
+                {
+                    <article class="track-card">
+                        <ResilientImage Class="track-cover-image"
+                                        Src="@album.CoverUrl"
+                                        Alt="@album.Name"
+                                        FallbackSrc="@CoverImageResolver.BuildSongCover(album.Name, album.Artist)" />
+                        <div class="track-content">
+                            <div class="track-heading">
+                                <h3>@album.Name</h3>
+                            </div>
+                            <p class="track-subtitle">@album.Artist</p>
+                            <p class="track-meta">专辑</p>
+                            <div class="track-tags">
+                                <span>@album.TotalTracks 首歌曲</span>
+                                @if (!string.IsNullOrWhiteSpace(album.ReleaseDate))
+                                {
+                                    <span>@album.ReleaseDate</span>
+                                }
+                            </div>
+                            <div class="track-actions">
+                                <a class="pill-button primary-pill" href="@album.ExternalUrl" target="_blank" rel="noreferrer">打开 Spotify</a>
+                            </div>
+                        </div>
+                    </article>
+                }
+            </div>
+        </section>
+    }
+
+    @if (ShowArtists && searchResults.Artists.Count > 0)
+    {
+        <section class="dashboard-section">
+            <div class="section-headline">
+                <div>
+                    <h2>歌手结果</h2>
+                    <p>共找到 @searchResults.Artists.Count 位相关歌手</p>
+                </div>
+            </div>
+
+            <div class="track-grid">
+                @foreach (var artist in searchResults.Artists)
+                {
+                    <article class="track-card">
+                        <ResilientImage Class="track-cover-image"
+                                        Src="@artist.CoverUrl"
+                                        Alt="@artist.Name"
+                                        FallbackSrc="@CoverImageResolver.BuildArtistImage(artist.Name)" />
+                        <div class="track-content">
+                            <div class="track-heading">
+                                <h3>@artist.Name</h3>
+                            </div>
+                            <p class="track-subtitle">歌手</p>
+                            <p class="track-meta">@GetGenresText(artist.Genres)</p>
+                            <div class="track-tags">
+                                <span>热度 @artist.Popularity</span>
+                            </div>
+                            <div class="track-actions">
+                                <a class="pill-button primary-pill" href="@artist.ExternalUrl" target="_blank" rel="noreferrer">打开 Spotify</a>
+                            </div>
+                        </div>
+                    </article>
+                }
+            </div>
+        </section>
+    }
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "q")]
+    public string? InitialKeyword { get; set; }
+
+    private string keyword = string.Empty;
+    private bool isLoading;
+    private bool hasSearched;
+    private string? errorMessage;
+    private string activeFilter = "all";
+    private SpotifyCatalogSearchResponseDto searchResults = new([], [], []);
+
+    private int TotalResults =>
+        activeFilter switch
+        {
+            "track" => searchResults.Tracks.Count,
+            "album" => searchResults.Albums.Count,
+            "artist" => searchResults.Artists.Count,
+            _ => searchResults.Tracks.Count + searchResults.Albums.Count + searchResults.Artists.Count
+        };
+
+    private bool ShowTracks => activeFilter is "all" or "track";
+    private bool ShowAlbums => activeFilter is "all" or "album";
+    private bool ShowArtists => activeFilter is "all" or "artist";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(InitialKeyword) &&
+            !string.Equals(keyword, InitialKeyword, StringComparison.Ordinal))
+        {
+            keyword = InitialKeyword;
+            await SearchAsync();
+        }
+    }
+
+    private async Task SearchAsync()
+    {
+        errorMessage = null;
+        hasSearched = true;
+        searchResults = new SpotifyCatalogSearchResponseDto([], [], []);
+
+        if (string.IsNullOrWhiteSpace(keyword))
+        {
+            return;
+        }
+
+        isLoading = true;
+
+        try
+        {
+            searchResults = await CatalogApiClient.SearchSpotifyCatalogAsync(keyword.Trim(), GetSearchType());
+
+            if (Session.IsAuthenticated && Session.CurrentUser is not null)
+            {
+                await CatalogApiClient.TrackSearchHistoryAsync(new TrackSearchHistoryRequest(
+                    Session.CurrentUser.UserId,
+                    keyword.Trim(),
+                    GetSearchType() ?? "all",
+                    "spotify",
+                    TotalResults,
+                    DateTimeOffset.UtcNow));
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task ChangeFilterAsync(string filter)
+    {
+        activeFilter = filter;
+        if (hasSearched && !string.IsNullOrWhiteSpace(keyword))
+        {
+            await SearchAsync();
+        }
+    }
+
+    private async Task OpenTrackDetailsAsync(SpotifyTrackSearchItemDto track)
+    {
+        var song = await EnsureTrackAsync(track);
+        var details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
+        if (details is not null)
+        {
+            PlayerState.OpenDetails(details);
+        }
+    }
+
+    private async Task PlayTrackAsync(SpotifyTrackSearchItemDto track)
+    {
+        var song = await EnsureTrackAsync(track);
+        var details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
+        if (details is not null)
+        {
+            PlayerState.Play(details);
+        }
+    }
+
+    private async Task LikeTrackAsync(SpotifyTrackSearchItemDto track)
+    {
+        if (!Session.IsAuthenticated || Session.CurrentUser is null)
+        {
+            errorMessage = "请先登录后再记录你的音乐偏好。";
+            return;
+        }
+
+        var song = await EnsureTrackAsync(track);
+        var result = await CatalogApiClient.SubmitPreferenceAsync(new SubmitSongPreferenceRequest(
+            Session.CurrentUser.UserId,
+            song.Id,
+            "like",
+            "search"));
+
+        PreferenceState.Apply(result);
+        LibraryState.NotifyChanged();
+    }
+
+    private async Task DislikeTrackAsync(SpotifyTrackSearchItemDto track)
+    {
+        if (!Session.IsAuthenticated || Session.CurrentUser is null)
+        {
+            errorMessage = "请先登录后再记录你的音乐偏好。";
+            return;
+        }
+
+        var song = await EnsureTrackAsync(track);
+        var result = await CatalogApiClient.SubmitPreferenceAsync(new SubmitSongPreferenceRequest(
+            Session.CurrentUser.UserId,
+            song.Id,
+            "dislike",
+            "search"));
+
+        PreferenceState.Apply(result);
+        LibraryState.NotifyChanged();
+    }
+
+    private async Task<SongCardDto> EnsureTrackAsync(SpotifyTrackSearchItemDto track)
+    {
+        var song = await CatalogApiClient.EnsureSpotifyTrackAsync(new EnsureSpotifyTrackRequest(
+            track.SpotifyTrackId,
+            null,
+            track.SpotifyUri,
+            track.Title,
+            track.Artist,
+            track.Album,
+            track.PreviewUrl,
+            track.CoverUrl,
+            track.ExternalUrl,
+            track.DurationSeconds,
+            track.Popularity,
+            track.ReleaseDate));
+
+        if (Session.IsAuthenticated && Session.CurrentUser is not null)
+        {
+            await CatalogApiClient.TrackBehaviorAsync(new TrackBehaviorEventRequest(
+                Session.CurrentUser.UserId,
+                song.Id,
+                "search-click",
+                "search",
+                "spotify",
+                null,
+                null,
+                song.DurationSeconds,
+                DateTimeOffset.UtcNow));
+        }
+
+        return song;
+    }
+
+    private string? GetSearchType() => activeFilter == "all" ? null : activeFilter;
+
+    private static string GetFilterClass(string filter, string? activeFilter = null) =>
+        $"pill-button {(string.Equals(filter, activeFilter ?? string.Empty, StringComparison.Ordinal) ? "primary-pill" : "ghost-pill")}";
+
+    private string GetFilterClass(string filter) => GetFilterClass(filter, activeFilter);
+
+    private static string FormatDuration(int seconds) =>
+        TimeSpan.FromSeconds(seconds).ToString(@"mm\:ss");
+
+    private static string GetGenresText(string[] genres) =>
+        genres.Length == 0 ? "Spotify 暂无流派标签" : string.Join(" / ", genres);
+}

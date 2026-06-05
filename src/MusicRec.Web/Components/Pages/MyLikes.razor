@@ -1,0 +1,338 @@
+@page "/my-likes"
+@inject UserSessionState Session
+@inject CatalogApiClient CatalogApiClient
+@inject PlayerState PlayerState
+@inject LibraryState LibraryState
+@inject PreferenceState PreferenceState
+@implements IDisposable
+
+<PageTitle>我喜欢的音乐 - SonicCanvas</PageTitle>
+
+<section class="playlist-hero liked-hero">
+    <div class="playlist-hero-cover">♥</div>
+    <div class="playlist-hero-content">
+        <span class="playlist-kicker">默认歌单</span>
+        <h1>我喜欢的音乐</h1>
+        <p>所有你标记为“喜欢”的歌曲都会自动收录在这里，并同步驱动推荐系统。</p>
+        <div class="playlist-stat-row">
+            <span>@likedSongs.Count 首歌曲</span>
+            <span>自动维护</span>
+            <button class="pill-button ghost-pill sort-trigger" @onclick="ToggleSortDropdown">
+                <span>排序:</span>
+                <span>@GetCurrentSortLabel()</span>
+                <span class="sort-arrow">▼</span>
+            </button>
+            <button class="pill-button ghost-pill" @onclick="ToggleBatchMode">
+                @(isBatchMode ? "退出批量选择" : "批量选择")
+            </button>
+        </div>
+    </div>
+</section>
+
+@if (showSortDropdown)
+{
+    <div class="sort-overlay" @onclick="ToggleSortDropdown">
+        <div class="sort-modal" @onclick:stopPropagation="true">
+            <button @onclick="() => SetSortOrder(SortOrder.TitleAsc)">歌曲名 A-Z</button>
+            <button @onclick="() => SetSortOrder(SortOrder.TitleDesc)">歌曲名 Z-A</button>
+            <button @onclick="() => SetSortOrder(SortOrder.ArtistAsc)">作者名 A-Z</button>
+            <button @onclick="() => SetSortOrder(SortOrder.ArtistDesc)">作者名 Z-A</button>
+            <button @onclick="() => SetSortOrder(SortOrder.AlbumAsc)">专辑名 A-Z</button>
+            <button @onclick="() => SetSortOrder(SortOrder.AlbumDesc)">专辑名 Z-A</button>
+            <button @onclick="() => SetSortOrder(SortOrder.DateAdded)">加入时间</button>
+        </div>
+    </div>
+}
+
+@if (!Session.IsReady)
+{
+    <div class="loading-container">
+        <div class="loading-spinner"></div>
+        <p>正在恢复你的音乐数据...</p>
+    </div>
+}
+else if (!Session.IsAuthenticated)
+{
+    <div class="empty-state">
+        <div class="empty-icon">🔐</div>
+        <h3>请先登录</h3>
+        <p>登录后即可查看你喜欢的音乐歌单。</p>
+        <a class="pill-button primary-pill" href="login">去登录</a>
+    </div>
+}
+else if (isLoading)
+{
+    <div class="loading-container">
+        <div class="loading-spinner"></div>
+        <p>正在同步你喜欢的歌曲...</p>
+    </div>
+}
+else if (!string.IsNullOrWhiteSpace(errorMessage))
+{
+    <div class="alert-error">
+        <span class="alert-icon">⚠</span>
+        @errorMessage
+    </div>
+}
+else if (likedSongs.Count == 0)
+{
+    <div class="empty-state">
+        <div class="empty-icon">💚</div>
+        <h3>你还没有喜欢的歌曲</h3>
+        <p>去首页或冷启动页标记几首喜欢的歌，这里会自动同步更新。</p>
+        <a class="pill-button primary-pill" href="cold-start">去完善偏好</a>
+    </div>
+}
+else
+{
+    <div class="track-grid-container">
+        <div class="track-grid">
+            @foreach (var song in likedSongs)
+            {
+                <MusicTrackCard Song="@song"
+                                IsLikedPage="true"
+                                ShowCheckbox="@isBatchMode"
+                                IsSelected="@selectedSongs.Contains(song.Id)"
+                                OnOpenDetails="OpenDetailsAsync"
+                                OnSelect="SelectSong"
+                                OnDeselect="DeselectSong" />
+            }
+        </div>
+
+        @if (isBatchMode)
+        {
+            <div class="batch-actions-overlay">
+                <div class="batch-info">
+                    <span>已选择 @selectedSongs.Count 首歌曲</span>
+                </div>
+                <div class="batch-actions">
+                    <button class="pill-button ghost-pill" @onclick="ClearSelection">取消选择</button>
+                </div>
+                @if (selectedSongs.Any())
+                {
+                    <button class="batch-delete-button" @onclick="BatchRemoveSelected" title="删除选中的歌曲">
+                        <span class="delete-icon">🗑️</span>
+                    </button>
+                }
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private List<SongCardDto> likedSongs = [];
+    private List<SongCardDto> allLikedSongs = [];
+    private HashSet<Guid> selectedSongs = [];
+    private bool isBatchMode = false;
+    private string? errorMessage;
+    private bool isLoading;
+    private bool showSortDropdown = false;
+    private SortOrder currentSortOrder = SortOrder.DateAdded;
+
+    public enum SortOrder
+    {
+        TitleAsc,
+        TitleDesc,
+        ArtistAsc,
+        ArtistDesc,
+        AlbumAsc,
+        AlbumDesc,
+        DateAdded
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Session.Changed += OnSessionChanged;
+        LibraryState.Changed += OnLibraryChanged;
+        await LoadLikedSongsAsync();
+    }
+
+    private void OnSessionChanged()
+    {
+        if (!Session.IsAuthenticated)
+        {
+            likedSongs = [];
+            selectedSongs = [];
+            StateHasChanged();
+        }
+        else
+        {
+            _ = InvokeAsync(LoadLikedSongsAsync);
+        }
+    }
+
+    private void OnLibraryChanged() => _ = InvokeAsync(LoadLikedSongsAsync);
+
+    private async Task LoadLikedSongsAsync()
+    {
+        if (!Session.IsReady || !Session.IsAuthenticated)
+        {
+            return;
+        }
+
+        likedSongs = [];
+        allLikedSongs = [];
+        selectedSongs = [];
+        errorMessage = null;
+        isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            var songs = await CatalogApiClient.GetLikedSongsAsync(Session.CurrentUser!.UserId);
+            allLikedSongs = songs.ToList();
+            ApplySorting();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ApplySorting()
+    {
+        likedSongs = currentSortOrder switch
+        {
+            SortOrder.TitleAsc => allLikedSongs.OrderBy(s => s.Title, StringComparer.OrdinalIgnoreCase).ToList(),
+            SortOrder.TitleDesc => allLikedSongs.OrderByDescending(s => s.Title, StringComparer.OrdinalIgnoreCase).ToList(),
+            SortOrder.ArtistAsc => allLikedSongs.OrderBy(s => s.Artist, StringComparer.OrdinalIgnoreCase).ToList(),
+            SortOrder.ArtistDesc => allLikedSongs.OrderByDescending(s => s.Artist, StringComparer.OrdinalIgnoreCase).ToList(),
+            SortOrder.AlbumAsc => allLikedSongs.OrderBy(s => s.Album, StringComparer.OrdinalIgnoreCase).ToList(),
+            SortOrder.AlbumDesc => allLikedSongs.OrderByDescending(s => s.Album, StringComparer.OrdinalIgnoreCase).ToList(),
+            SortOrder.DateAdded => allLikedSongs.ToList(),
+            _ => allLikedSongs.ToList()
+        };
+        StateHasChanged();
+    }
+
+    private void ToggleSortDropdown()
+    {
+        showSortDropdown = !showSortDropdown;
+    }
+
+    private void SetSortOrder(SortOrder order)
+    {
+        currentSortOrder = order;
+        showSortDropdown = false;
+        ApplySorting();
+    }
+
+    private string GetCurrentSortLabel()
+    {
+        return currentSortOrder switch
+        {
+            SortOrder.TitleAsc => "歌曲名 A-Z",
+            SortOrder.TitleDesc => "歌曲名 Z-A",
+            SortOrder.ArtistAsc => "作者名 A-Z",
+            SortOrder.ArtistDesc => "作者名 Z-A",
+            SortOrder.AlbumAsc => "专辑名 A-Z",
+            SortOrder.AlbumDesc => "专辑名 Z-A",
+            SortOrder.DateAdded => "加入时间",
+            _ => "加入时间"
+        };
+    }
+
+    private async Task OpenDetailsAsync(SongCardDto song)
+    {
+        var details = await CatalogApiClient.GetSongDetailsAsync(song.Id);
+        if (details is not null)
+        {
+            PlayerState.OpenDetails(details);
+        }
+    }
+
+    private async Task RemoveFromLikesAsync(SongCardDto song)
+    {
+        var result = await CatalogApiClient.SubmitPreferenceAsync(new SubmitSongPreferenceRequest(
+            Session.CurrentUser!.UserId,
+            song.Id,
+            "dislike",
+            "likes-page"));
+
+        PreferenceState.Apply(result);
+        selectedSongs.Remove(song.Id);
+        LibraryState.NotifyChanged();
+        await LoadLikedSongsAsync();
+    }
+
+    private void SelectSong(SongCardDto song)
+    {
+        selectedSongs.Add(song.Id);
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void DeselectSong(SongCardDto song)
+    {
+        selectedSongs.Remove(song.Id);
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void ToggleBatchMode()
+    {
+        isBatchMode = !isBatchMode;
+        if (!isBatchMode)
+        {
+            selectedSongs.Clear();
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void ClearSelection()
+    {
+        selectedSongs.Clear();
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task BatchRemoveSelected()
+    {
+        if (!selectedSongs.Any())
+        {
+            return;
+        }
+
+        try
+        {
+            var errors = new List<string>();
+            foreach (var songId in selectedSongs.ToList())
+            {
+                try
+                {
+                    var result = await CatalogApiClient.SubmitPreferenceAsync(new SubmitSongPreferenceRequest(
+                        Session.CurrentUser!.UserId,
+                        songId,
+                        "dislike",
+                        "likes-page"));
+                    PreferenceState.Apply(result);
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"歌曲 {songId}: {ex.Message}");
+                }
+            }
+
+            selectedSongs.Clear();
+            LibraryState.NotifyChanged();
+            await LoadLikedSongsAsync();
+
+            if (errors.Any())
+            {
+                Console.WriteLine($"部分歌曲删除失败:\n{string.Join("\n", errors)}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"批量删除失败: {ex.Message}");
+        }
+    }
+
+    public void Dispose()
+    {
+        Session.Changed -= OnSessionChanged;
+        LibraryState.Changed -= OnLibraryChanged;
+    }
+}
